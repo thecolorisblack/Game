@@ -364,11 +364,11 @@ export class Buildings {
       const lf = this._frame(leafYaw);
       b.put(bevelBox(width - 0.04, height - 0.04, 0.075, 0.014, { uvOffset: [0, cy, 0] }),
         trs(q[0], cy, q[1], leafYaw),
-        { mat: 'metal_rusted', surface: 'metal', tiling: 1 });
+        { mat: 'metal_rusted', surface: 'metal', tiling: 1, trim: true });
       for (const py of [height * 0.28, height * 0.68]) {
         b.put(bevelBox(width * 0.62, height * 0.26, 0.02, 0.006),
           trs(q[0] + lf.ox * 0.05, py, q[1] + lf.oz * 0.05, leafYaw),
-          { mat: 'metal_rusted', surface: 'metal', cast: false });
+          { mat: 'metal_rusted', surface: 'metal', cast: false, trim: true });
       }
       b.put(cylinderGeo(0.028, 0.028, 0.16, 8),
         trs(q[0] + lf.tx * width * 0.38 + lf.ox * 0.07, height * 0.48,
