@@ -100,6 +100,37 @@ try {
     };
   });
 
+  // Every object that does not write depth, biggest first. An oversized one of
+  // these drawn late is the classic cause of a whole-frame veil.
+  const veils = await page.evaluate(() => {
+    const g = window.__GAME__;
+    const THREE = window.__THREE__;
+    const out = [];
+    g.scene.traverse((o) => {
+      if (!(o.isMesh || o.isInstancedMesh || o.isPoints || o.isSprite) || !o.visible) return;
+      const ms = (Array.isArray(o.material) ? o.material : [o.material]).filter(Boolean);
+      const bad = ms.filter((m) => m.transparent || m.depthWrite === false || m.blending === 2);
+      if (!bad.length) return;
+      if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
+      const s = o.geometry.boundingSphere;
+      const scale = new THREE.Vector3().setFromMatrixScale(o.matrixWorld);
+      out.push({
+        object: o.name || o.type,
+        parent: o.parent?.name || null,
+        materials: bad.map((m) => ({
+          name: m.name || m.type, transparent: m.transparent, opacity: m.opacity,
+          depthWrite: m.depthWrite, depthTest: m.depthTest,
+          blending: m.blending, side: m.side, alphaTest: m.alphaTest,
+        })),
+        renderOrder: o.renderOrder,
+        radius: +(s.radius * Math.max(scale.x, scale.y, scale.z)).toFixed(1),
+        frustumCulled: o.frustumCulled,
+      });
+    });
+    return out.sort((a, b) => b.radius - a.radius);
+  });
+
+  dump.nonDepthWriting = veils;
   console.log(JSON.stringify(dump, null, 2));
   if (errs.length) console.error('\n--- console ---\n' + errs.slice(0, 20).join('\n'));
   await browser.close();
