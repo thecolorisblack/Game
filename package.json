@@ -1,0 +1,30 @@
+{
+  "name": "operation-blackout",
+  "version": "0.1.0",
+  "description": "A AAA-fidelity browser first-person shooter built on three.js",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "shoot": "node scripts/shoot.mjs",
+    "check": "node scripts/check.mjs"
+  },
+  "repository": {
+    "type": "git",
+    "url": "http://local_proxy@127.0.0.1:41729/git/thecolorisblack/Game"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "three": "^0.185.1"
+  },
+  "devDependencies": {
+    "playwright": "^1.56.0",
+    "simplex-noise": "^4.0.3",
+    "three-mesh-bvh": "^0.9.13",
+    "vite": "^6.4.3"
+  },
+  "private": true,
+  "type": "module"
+}
