@@ -41,21 +41,69 @@ export const POTHOLES = [
 ];
 
 /**
+ * Building palette.
+ *
+ * These are *linear* multipliers on an already-baked albedo, applied through the
+ * vertex colour channel (see `paintGeometry`), so they cost no extra draw call
+ * and a whole block still merges into one mesh. Multiplication can only subtract
+ * saturation, never invent it, which is why the painted entries push one channel
+ * above 1 rather than pulling the other two down — that is the difference
+ * between "blue house" and "dark grey house".
+ *
+ * They are pitched as a value ladder, not as decoration: `whitewash` and
+ * `limewash` are the bright end that the eye lands on first, `oxide` and `mud`
+ * are the dark end that frames them, and no two neighbours on the same street
+ * sit at the same value.
+ */
+export const PAINT = {
+  whitewash: [1.28, 1.27, 1.22],   // brightest thing in the level
+  limewash: [1.14, 1.13, 1.06],
+  sand: [1.06, 0.94, 0.74],
+  ochre: [1.16, 0.86, 0.50],
+  saffron: [1.22, 0.94, 0.46],
+  terracotta: [1.10, 0.62, 0.42],
+  oxide: [0.92, 0.48, 0.36],
+  teal: [0.62, 0.96, 1.02],
+  sky: [0.72, 0.92, 1.22],
+  verdigris: [0.66, 0.96, 0.80],
+  grey: [0.80, 0.82, 0.84],
+  mud: [0.72, 0.60, 0.46],
+  soot: [0.52, 0.50, 0.48],
+};
+
+/** Weathered paint for shutters, door leaves and railings. */
+export const TRIM = {
+  blue: [0.72, 1.30, 1.85],
+  teal: [0.70, 1.32, 1.30],
+  green: [0.78, 1.24, 0.86],
+  red: [1.34, 0.62, 0.52],
+  ochre: [1.30, 0.98, 0.60],
+  bare: [0.86, 0.80, 0.72],
+};
+
+/**
  * Buildings. `cx/cz` is the footprint centre, `w/d` the extents, `rot` a small
  * yaw in degrees that keeps the town from reading as a spreadsheet. The two
  * hero volumes (souk-hall and plaza-house) stay axis aligned because the shot
  * list frames them.
+ *
+ * `tint` / `accentTint` / `trimTint` pick out of the palettes above. They are
+ * applied by material name inside `Buildings.build`, so every piece a style
+ * emits — piers, arches, copings, string courses — is coloured without the
+ * generators knowing anything about it.
  */
 export const BUILDINGS = [
   {
     id: 'souk-hall', style: 'hall', cx: 14, cz: -16, w: 16, d: 20, rot: 0,
     floors: 2, floorH: 4.3, wall: 'plaster', accent: 'stucco',
+    tint: PAINT.ochre, accentTint: PAINT.whitewash, trimTint: TRIM.teal,
     arcade: { west: true, east: true }, loggia: { west: true },
     enterable: true, roofAccess: true, parapet: 1.05,
   },
   {
     id: 'plaza-house', style: 'townhouse', cx: -19, cz: -7, w: 14, d: 18, rot: 0,
     floors: 3, floorH: 3.5, wall: 'stucco', accent: 'brick',
+    tint: PAINT.whitewash, trimTint: TRIM.blue,
     enterable: true, roofAccess: true, parapet: 0.95,
     balconies: [{ side: 'east', offset: -3.5, width: 4.2, floor: 1 },
       { side: 'east', offset: 3.5, width: 4.2, floor: 2 }],
@@ -64,76 +112,88 @@ export const BUILDINGS = [
   {
     id: 'corner-shop', style: 'townhouse', cx: 12, cz: 15, w: 12, d: 14, rot: -3,
     floors: 2, floorH: 3.6, wall: 'plaster', accent: 'concrete',
+    tint: PAINT.sky, accentTint: PAINT.grey, trimTint: TRIM.red,
     enterable: true, roofAccess: false, parapet: 0.8,
     balconies: [{ side: 'west', offset: 0, width: 5.0, floor: 1 }],
   },
   {
     id: 'riad', style: 'townhouse', cx: -27, cz: 14, w: 14, d: 16, rot: 4,
     floors: 2, floorH: 3.7, wall: 'stucco', accent: 'plaster',
+    tint: PAINT.saffron, accentTint: PAINT.limewash, trimTint: TRIM.green,
     enterable: true, roofAccess: false, parapet: 1.0,
     balconies: [{ side: 'east', offset: 0, width: 4.6, floor: 1 }],
   },
   {
     id: 'ruin', style: 'ruin', cx: -21, cz: -31, w: 14, d: 18, rot: -6,
     floors: 2, floorH: 3.4, wall: 'concrete_cracked', accent: 'brick',
+    tint: PAINT.soot, trimTint: TRIM.bare,
     enterable: true, parapet: 0.5,
   },
   {
     id: 'warehouse', style: 'warehouse', cx: 17, cz: -48, w: 18, d: 22, rot: 2,
     floors: 1, floorH: 7.4, wall: 'concrete', accent: 'metal_corrugated',
+    tint: PAINT.grey, accentTint: PAINT.oxide, trimTint: TRIM.blue,
     enterable: true, parapet: 0.4,
   },
   {
     id: 'west-block', style: 'townhouse', cx: -56, cz: -10, w: 16, d: 40, rot: 1,
     floors: 2, floorH: 3.6, wall: 'plaster', accent: 'stucco',
+    tint: PAINT.limewash, accentTint: PAINT.sand, trimTint: TRIM.ochre,
     enterable: false, parapet: 0.9,
   },
   {
     id: 'west-sheds', style: 'warehouse', cx: -58, cz: 33, w: 12, d: 22, rot: -2,
     floors: 1, floorH: 4.6, wall: 'stucco', accent: 'metal_corrugated',
+    tint: PAINT.mud, accentTint: PAINT.oxide, trimTint: TRIM.bare,
     enterable: false, parapet: 0.35,
   },
   {
     id: 'minaret', style: 'tower', cx: -47, cz: -44, w: 6.4, d: 6.4, rot: 0,
     floors: 4, floorH: 3.5, wall: 'stucco', accent: 'plaster',
+    tint: PAINT.whitewash, accentTint: PAINT.verdigris, trimTint: TRIM.green,
     enterable: false, parapet: 0.9,
   },
   {
     id: 'villa', style: 'townhouse', cx: 51, cz: -10, w: 18, d: 20, rot: -4,
     floors: 2, floorH: 3.8, wall: 'stucco', accent: 'plaster',
+    tint: PAINT.terracotta, accentTint: PAINT.limewash, trimTint: TRIM.blue,
     enterable: true, roofAccess: true, parapet: 1.0,
     balconies: [{ side: 'west', offset: 0, width: 6.0, floor: 1 }],
   },
   {
     id: 'garage', style: 'warehouse', cx: 50, cz: 17, w: 16, d: 14, rot: 3,
     floors: 1, floorH: 5.2, wall: 'concrete', accent: 'metal_corrugated',
+    tint: PAINT.mud, accentTint: PAINT.oxide, trimTint: TRIM.red,
     enterable: true, parapet: 0.3,
   },
   {
     id: 'north-row', style: 'townhouse', cx: -20, cz: -55, w: 18, d: 12, rot: -2,
     floors: 2, floorH: 3.4, wall: 'plaster', accent: 'brick',
+    tint: PAINT.sand, trimTint: TRIM.teal,
     enterable: false, parapet: 0.85,
   },
   {
     id: 'south-row', style: 'townhouse', cx: 14, cz: 47, w: 20, d: 12, rot: 2,
     floors: 2, floorH: 3.4, wall: 'stucco', accent: 'plaster',
+    tint: PAINT.verdigris, accentTint: PAINT.whitewash, trimTint: TRIM.ochre,
     enterable: false, parapet: 0.85,
   },
   {
     id: 'east-shed', style: 'warehouse', cx: 52, cz: -44, w: 14, d: 14, rot: -3,
     floors: 1, floorH: 4.8, wall: 'plaster', accent: 'metal_corrugated',
+    tint: PAINT.ochre, accentTint: PAINT.oxide, trimTint: TRIM.bare,
     enterable: false, parapet: 0.3,
   },
 ];
 
 /** Free-standing compound walls: polylines extruded to a height. */
 export const WALLS = [
-  { pts: [[40, -30], [62, -30], [62, 6], [40, 6]], h: 2.6, gap: [[40, -30], [40, -24]], mat: 'stucco' },
-  { pts: [[26, 30], [26, 8]], h: 2.4, mat: 'concrete' },
-  { pts: [[-13, 27], [-13, 7]], h: 2.5, mat: 'stucco' },
-  { pts: [[-46, 24], [-46, -30]], h: 2.7, mat: 'concrete' },
-  { pts: [[6, 40], [26, 40]], h: 2.3, mat: 'stucco' },
-  { pts: [[6, -54], [6, -36]], h: 2.5, mat: 'concrete' },
+  { pts: [[40, -30], [62, -30], [62, 6], [40, 6]], h: 2.6, gap: [[40, -30], [40, -24]], mat: 'stucco', tint: PAINT.limewash },
+  { pts: [[26, 30], [26, 8]], h: 2.4, mat: 'concrete', tint: PAINT.grey },
+  { pts: [[-13, 27], [-13, 7]], h: 2.5, mat: 'stucco', tint: PAINT.sand },
+  { pts: [[-46, 24], [-46, -30]], h: 2.7, mat: 'concrete', tint: PAINT.mud },
+  { pts: [[6, 40], [26, 40]], h: 2.3, mat: 'stucco', tint: PAINT.ochre },
+  { pts: [[6, -54], [6, -36]], h: 2.5, mat: 'concrete', tint: PAINT.grey },
 ];
 
 /**

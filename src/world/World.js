@@ -78,7 +78,9 @@ export class World {
     if (custom) { this._mats.set(key, custom); return custom; }
 
     if (!materials) {
-      const fallback = new THREE.MeshStandardMaterial({ color: 0x8b8880, roughness: 0.92 });
+      const fallback = new THREE.MeshStandardMaterial({
+        color: 0x8b8880, roughness: 0.92, vertexColors: true,
+      });
       this._mats.set(key, fallback);
       return fallback;
     }
@@ -87,7 +89,10 @@ export class World {
     const tileMeters = base?.userData?.tileMeters || 2;
     const extra = { ...opts };
     delete extra.tiling; delete extra.key;
-    const m = materials.variant(name, { scale: tiling / tileMeters, ...extra }) || base;
+    // Every world material reads the vertex colour channel — see `paintGeometry`.
+    // The flag is part of the variant cache key, so nothing another system asked
+    // for is affected.
+    const m = materials.variant(name, { scale: tiling / tileMeters, vertexColors: true, ...extra }) || base;
     this._mats.set(key, m);
     return m;
   }
@@ -95,9 +100,28 @@ export class World {
   _customMaterial(name, tiling) {
     const materials = this.game.materials;
     if (!materials) return null;
-    const v = (base, opts) => materials.variant(base, opts) || materials.get(base);
+    const v = (base, opts) => materials.variant(base, { vertexColors: true, ...opts })
+      || materials.get(base);
 
     switch (name) {
+      // ---- glass ---------------------------------------------------------
+      // A pane set in a wall in full sun does not read as a white veil. It reads
+      // as a near-black mirror: what you see is the sky and the building
+      // opposite, not the room behind. So the world's glass is *opaque* —
+      // depth-writing, single-sided, dark, and glossy enough that the sky probe
+      // carries the whole read.
+      //
+      // The alternative that was here (0.2 opacity, DoubleSide, no depth write)
+      // meant every window in a 40 m block merged into one unsorted transparent
+      // draw that blended over everything behind it. That is where the haze on
+      // the distant buildings came from, and no amount of sorting fixes it while
+      // the panes are merged.
+      case 'glass': return this._pane('glass', 0);
+      // Building windows only: the same dark pane, but wired into the day/night
+      // cycle so the town lights up after dusk. (Props — insulators, bottles,
+      // smashed lamp diffusers — must not glow, hence the split.)
+      case 'windowGlass': return this._pane('windowGlass', 1.6);
+
       case 'windowLight': {
         // Near-black by day so windows read as holes, warm and emissive at night.
         const m = v('plaster', {
@@ -147,8 +171,33 @@ export class World {
 
   _canopy(color, name) {
     return this.game.materials.variant('fabric', {
-      scale: 1 / 1.1, color, side: THREE.DoubleSide, roughness: 0.92, name,
+      scale: 1 / 1.1, color, side: THREE.DoubleSide, roughness: 0.92,
+      vertexColors: true, name,
     });
+  }
+
+  /**
+   * Opaque high-gloss dark glass. `night` is the emissive level the panes reach
+   * once the practicals come on; 0 leaves the material inert.
+   */
+  _pane(name, night) {
+    const m = this.game.materials.variant('glass', {
+      scale: 0.5,
+      color: 0x141a1d,           // dark base: the reflection does the work
+      roughness: 0.04, metalness: 0.0,
+      transparent: false, opacity: 1.0, depthWrite: true, depthTest: true,
+      side: THREE.FrontSide,
+      envMapIntensity: 3.4, ior: 1.52, specularIntensity: 1.0,
+      emissive: 0xffb066, emissiveIntensity: 0,
+      vertexColors: true, name,
+    });
+    // A failed variant falls back to the shared library material; never mutate
+    // that — other systems draw with it.
+    if (!m || m === this.game.materials.get('glass')) return m || null;
+    m.emissive = new THREE.Color(0xffb066);
+    m.emissiveIntensity = 0;
+    if (night > 0) this._emissives.push({ mat: m, day: 0, night });
+    return m;
   }
 
   /** Materials whose emissive level is driven by the day/night cycle. */

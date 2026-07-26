@@ -53,6 +53,22 @@ export class Buildings {
       new THREE.Vector3(1, 1, 1),
     );
 
+    /**
+     * Colour is routed by material name rather than threaded through forty call
+     * sites: whatever a style asks for as `spec.wall` gets the building's paint,
+     * `spec.accent` gets the trim colour of its cornices and copings, and
+     * anything nominated as trim (shutters, door leaves) gets the joinery
+     * colour. An explicit `def.tint` always wins, and `def.tint === null` opts a
+     * piece out entirely.
+     */
+    const paintOf = (def) => {
+      if (def.tint !== undefined) return def.tint ?? undefined;
+      if (def.trim) return spec.trimTint;
+      if (def.mat && def.mat === spec.wall) return spec.tint;
+      if (def.mat && def.mat === spec.accent) return spec.accentTint ?? spec.tint;
+      return undefined;
+    };
+
     const b = {
       spec, rng, M, baseY, rot,
       hw: spec.w * 0.5, hd: spec.d * 0.5,
@@ -64,10 +80,13 @@ export class Buildings {
       lights: ctx.lights,
       chunk,
       put: (geo, local, def) => {
-        ctx.batcher.add(geo, _mA.multiplyMatrices(M, local), { chunk, ...def });
+        ctx.batcher.add(geo, _mA.multiplyMatrices(M, local), {
+          chunk, groundY: baseY, ...def, tint: paintOf(def),
+        });
       },
       inst: (key, geo, local, def) => {
-        ctx.instancer.add(key, geo, _mB.multiplyMatrices(M, local).clone(), def);
+        ctx.instancer.add(key, geo, _mB.multiplyMatrices(M, local).clone(),
+          { ...def, tint: paintOf(def) });
       },
       world: (local) => new THREE.Vector3().setFromMatrixPosition(_mA.multiplyMatrices(M, local)),
     };
@@ -157,11 +176,50 @@ export class Buildings {
         b.put(bevelBox(o.width + 0.34, 0.09, thickness + 0.18, 0.02, { uvOffset: [mid, o.sill, 0] }),
           trs(x0 + ux * mid, o.sill - 0.045, z0 + uz * mid, yaw),
           { mat: def.accent || 'concrete', surface: 'concrete' });
+        this._streaks(b, x0 + ux * mid, z0 + uz * mid, yaw, o.width, o.sill - 0.09, thickness, def);
       }
       cursor = c;
     }
     put(cursor, len, y0, y1);
     return len;
+  }
+
+  /**
+   * Rain staining below a sill.
+   *
+   * Water sheets off the oversail, picks up the dirt on the underside and runs
+   * down the render in a handful of ragged, unevenly spaced tails. It is the
+   * single most recognisable weathering signature on a plastered building and it
+   * is nearly free: the strips are 10 mm proud of the wall face, share the
+   * wall's own material — so they merge into the wall's bucket, not a new draw
+   * call — and carry the whole effect in a vertical vertex-colour gradient that
+   * starts almost black under the sill and washes out to nothing.
+   */
+  _streaks(b, x, z, yaw, width, sillY, thickness, def) {
+    const rng = b.rng;
+    const f = this._frame(yaw);
+    const out = thickness * 0.5 + 0.006;
+    const tails = rng.int(2, 4);
+    for (let i = 0; i < tails; i++) {
+      const along = (rng.next() - 0.5) * width * 0.92;
+      const len = rng.range(0.55, 2.1);
+      const w = rng.range(0.05, 0.19);
+      const top = sillY - 0.02;
+      const px = x + f.tx * along + f.ox * out;
+      const pz = z + f.tz * along + f.oz * out;
+      const dark = rng.range(0.34, 0.58);
+      b.put(bevelBox(w, len, 0.010, 0.003, { uvOffset: [along, top, 0] }),
+        trs(px, top - len * 0.5, pz, yaw),
+        {
+          mat: def.mat, surface: 'concrete', cast: false, collide: false,
+          // 0 directly under the sill, 1 at the washed-out tail
+          tint: (vx, vy) => {
+            const t = clamp((top - vy) / len, 0, 1);
+            const k = dark + (1 - dark) * t * t;
+            return [k, k * 0.97, k * 0.92];
+          },
+        });
+    }
   }
 
   /**
@@ -183,7 +241,9 @@ export class Buildings {
     const h = y1 - y0;
     const cy = (y0 + y1) * 0.5;
     const t = 0.07;
-    const frameDef = { mat: 'wood', surface: 'wood' };
+    // Joinery is never the same value as the render it sits in: an unpainted
+    // frame at wall brightness makes the opening vanish.
+    const frameDef = { mat: 'wood', surface: 'wood', tint: [0.46, 0.40, 0.34] };
     const f = this._frame(yaw);
     const at = (along, out) => [x + f.tx * along + f.ox * out, z + f.tz * along + f.oz * out];
 
@@ -199,17 +259,38 @@ export class Buildings {
     b.put(bevelBox(0.045, h - t * 2, 0.10, 0.01), trs(p[0], cy, p[1], yaw), frameDef);
     b.put(bevelBox(width - t * 2, 0.045, 0.10, 0.01), trs(p[0], cy + h * 0.18, p[1], yaw), frameDef);
 
-    // the room behind: near-black by day, warm at night
+    // The room behind. An opening only reads as depth if what is inside it is
+    // *much* darker than the wall around it — a window that sits at wall value
+    // is a sticker. This is pushed the rest of the way to black by day and is
+    // the thing that glows warm at night.
     const inw = at(0, opts.inward ?? -0.10);
-    b.put(bevelBox(width - 0.1, h - 0.1, 0.03, 0.008),
+    b.put(bevelBox(width - 0.02, h - 0.02, 0.03, 0.008),
       trs(inw[0], cy, inw[1], yaw),
-      { mat: 'windowLight', surface: 'glass', cast: false, collide: false });
+      {
+        mat: 'windowLight', surface: 'glass', cast: false, collide: false,
+        tint: [0.22, 0.21, 0.22], ao: 0,
+      });
+
+    // Reveal: the four inner faces of the opening, in shadow all day. Without
+    // them the wall reads as a card with a hole cut in it.
+    const rv = at(0, -0.02);
+    const rt = 0.055;
+    const reveal = {
+      mat: 'concrete', surface: 'concrete', cast: false, collide: false,
+      tint: [0.34, 0.32, 0.30], ao: 0,
+    };
+    for (const s of [-1, 1]) {
+      const q = at(s * (width * 0.5 - rt * 0.5), -0.02);
+      b.put(bevelBox(rt, h, 0.30, 0.006), trs(q[0], cy, q[1], yaw), reveal);
+    }
+    b.put(bevelBox(width, rt, 0.30, 0.006), trs(rv[0], y1 - rt * 0.5, rv[1], yaw), reveal);
+    b.put(bevelBox(width, rt, 0.30, 0.006), trs(rv[0], y0 + rt * 0.5, rv[1], yaw), reveal);
 
     if (!opts.noGlass) {
       const gp = at(0, 0.005);
       b.put(bevelBox(width - 0.13, h - 0.13, 0.018, 0.004),
         trs(gp[0], cy, gp[1], yaw),
-        { mat: 'glass', surface: 'glass', cast: false, collide: true });
+        { mat: 'windowGlass', surface: 'glass', cast: false, collide: true, ao: 0 });
     }
 
     // shutters, sometimes ajar, sometimes missing a leaf
@@ -227,7 +308,7 @@ export class Buildings {
         const leafYaw = yaw - s * swing;
         b.put(bevelBox(leaf, h * 0.98, 0.05, 0.012, { uvOffset: [hingeAlong, cy, 0] }),
           trs(q[0], cy, q[1], leafYaw),
-          { mat: 'wood', surface: 'wood', tiling: 1 });
+          { mat: 'wood', surface: 'wood', tiling: 1, trim: true });
         // Louvre slats. Unchamfered on purpose: a 22 mm slat never shows an
         // edge highlight and there are three thousand of them in the level.
         const lf = this._frame(leafYaw);
@@ -236,7 +317,7 @@ export class Buildings {
           const sy = y0 + (i + 0.5) * (h / slats);
           b.put(bevelBox(leaf * 0.86, 0.052, 0.022, 0),
             trs(q[0] + lf.ox * 0.033, sy, q[1] + lf.oz * 0.033, leafYaw),
-            { mat: 'wood', surface: 'wood', cast: false });
+            { mat: 'wood', surface: 'wood', cast: false, trim: true });
         }
       }
     }
@@ -249,17 +330,28 @@ export class Buildings {
     const f = this._frame(yaw);
     const at = (along, out) => [x + f.tx * along + f.ox * out, z + f.tz * along + f.oz * out];
 
+    const jamb = { mat: 'wood', surface: 'wood', tint: [0.42, 0.36, 0.30] };
     let p = at(0, 0);
-    b.put(bevelBox(width + 0.24, 0.12, 0.22, 0.02), trs(p[0], height + 0.06, p[1], yaw),
-      { mat: 'wood', surface: 'wood' });
+    b.put(bevelBox(width + 0.24, 0.12, 0.22, 0.02), trs(p[0], height + 0.06, p[1], yaw), jamb);
     for (const s of [-1, 1]) {
       const q = at(s * (width * 0.5 + 0.06), 0);
-      b.put(bevelBox(0.12, height, 0.22, 0.02), trs(q[0], cy, q[1], yaw),
-        { mat: 'wood', surface: 'wood' });
+      b.put(bevelBox(0.12, height, 0.22, 0.02), trs(q[0], cy, q[1], yaw), jamb);
     }
     const th = at(0, 0.08);
     b.put(bevelBox(width + 0.3, 0.10, 0.5, 0.02), trs(th[0], 0.05, th[1], yaw),
-      { mat: 'concrete', surface: 'concrete', cast: false });
+      { mat: 'concrete', surface: 'concrete', cast: false, tint: [0.72, 0.70, 0.68] });
+
+    // A doorway in a building you cannot enter still has to read as a hole into
+    // somewhere. Non-collidable, so nothing about movement changes.
+    if (!b.spec.enterable) {
+      const back = at(0, -0.19);
+      b.put(bevelBox(width + 0.04, height + 0.02, 0.05, 0.01),
+        trs(back[0], cy, back[1], yaw),
+        {
+          mat: 'windowLight', surface: 'concrete', cast: false, collide: false,
+          tint: [0.16, 0.15, 0.16], ao: 0,
+        });
+    }
 
     if (opts.leaf !== false) {
       const open = opts.open ?? (rng.chance(0.4) ? rng.range(0.3, 1.5) : 0);

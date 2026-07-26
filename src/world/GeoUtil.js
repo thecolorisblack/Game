@@ -27,11 +27,11 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 /* attribute plumbing                                                  */
 /* ------------------------------------------------------------------ */
 
-const KEEP = ['position', 'normal', 'uv'];
+const KEEP = ['position', 'normal', 'uv', 'color'];
 
 /**
- * Make a geometry safe to merge: exactly position/normal/uv, always indexed.
- * three's primitives already satisfy most of this; user geometry and
+ * Make a geometry safe to merge: exactly position/normal/uv/color, always
+ * indexed. three's primitives already satisfy most of this; user geometry and
  * ExtrudeGeometry do not.
  */
 export function normalizeGeo(geo) {
@@ -43,6 +43,7 @@ export function normalizeGeo(geo) {
     const n = geo.attributes.position.count;
     geo.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * 2), 2));
   }
+  ensureColor(geo);
   if (!geo.index) {
     const n = geo.attributes.position.count;
     const arr = n > 65535 ? new Uint32Array(n) : new Uint16Array(n);
@@ -82,6 +83,129 @@ export function triplanarUV(geo, scale = 1, offset = [0, 0, 0]) {
     uv[i * 2 + 1] = v * scale;
   }
   geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  return geo;
+}
+
+/* ------------------------------------------------------------------ */
+/* vertex colour: the level's art direction channel                    */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Every batched geometry carries a linear-RGB colour attribute, and every
+ * material the world hands out is built with `vertexColors: true`. That one
+ * channel is what stops a procedural town from reading as a single sand-coloured
+ * mass, and it costs nothing at draw time:
+ *
+ *   - **Painted buildings.** A hundred windows and four hundred wall segments in
+ *     a chunk still merge into one mesh, but each building's render can be a
+ *     different colour. Doing the same with per-building materials would split
+ *     every bucket and multiply the draw calls by the number of buildings.
+ *   - **Baked cavity shading.** Soffits, lintel undersides, the underside of
+ *     every coping stone and balcony slab are permanently in shade and
+ *     permanently sooty; upward faces collect pale dust. Multiplying that into
+ *     albedo separates planes even where the sun does not reach, which is the
+ *     difference between "well built" and "flat".
+ *   - **Grime with a ground reference.** Splash-back darkens the bottom half
+ *     metre of everything that meets the street, so walls stop meeting the
+ *     ground on a clean line.
+ *
+ * Values are linear multipliers and are deliberately *not* clamped to 1: a
+ * whitewashed wall has to be able to sit above the baked albedo.
+ */
+
+const _tintColor = new THREE.Color();
+
+/** Guarantee a float RGB colour attribute (white) sized to the geometry. */
+export function ensureColor(geo) {
+  const count = geo.attributes.position?.count ?? 0;
+  const existing = geo.attributes.color;
+  if (existing && existing.itemSize === 3 && existing.count === count
+    && existing.array instanceof Float32Array && !existing.normalized) return existing;
+  const attr = new THREE.BufferAttribute(new Float32Array(count * 3).fill(1), 3);
+  geo.setAttribute('color', attr);
+  return attr;
+}
+
+/**
+ * Resolve `def.tint` into either a constant (written into `out`) or a callback.
+ * Accepts an sRGB hex, a THREE.Color, a raw linear `[r,g,b]` triple (the only
+ * form that may exceed 1) or `fn(x, y, z, nx, ny, nz) -> [r,g,b]`.
+ */
+function resolveTint(tint, out) {
+  out[0] = out[1] = out[2] = 1;
+  if (tint === undefined || tint === null) return null;
+  if (typeof tint === 'function') return tint;
+  if (Array.isArray(tint)) {
+    out[0] = tint[0] ?? 1; out[1] = tint[1] ?? 1; out[2] = tint[2] ?? 1;
+    return null;
+  }
+  if (typeof tint === 'number') {
+    _tintColor.setHex(tint);
+    out[0] = _tintColor.r; out[1] = _tintColor.g; out[2] = _tintColor.b;
+    return null;
+  }
+  if (tint.isColor) { out[0] = tint.r; out[1] = tint.g; out[2] = tint.b; }
+  return null;
+}
+
+/**
+ * Bake `def.tint`, cavity shading and ground grime into the colour attribute.
+ * Positions and normals must already be in world space.
+ *
+ * @param {object} def { tint, ao (0..1, false to disable), groundY, splash, paint:false }
+ */
+export function paintGeometry(geo, def = {}) {
+  if (def.paint === false) return geo;
+  const pos = geo.attributes.position;
+  if (!pos) return geo;
+  const nor = geo.attributes.normal;
+  const col = ensureColor(geo);
+  const arr = col.array;
+
+  const base = [1, 1, 1];
+  const fn = resolveTint(def.tint, base);
+  const ao = def.ao === false ? 0 : (def.ao ?? 1);
+  const groundY = def.groundY;
+  const splash = groundY === undefined ? 0 : (def.splash ?? 1);
+  const flat = !fn && ao <= 0 && splash <= 0;
+
+  const n = pos.count;
+  for (let i = 0; i < n; i++) {
+    let r = base[0], g = base[1], b = base[2];
+    if (!flat) {
+      const y = pos.getY(i);
+      if (fn) {
+        const c = fn(pos.getX(i), y, pos.getZ(i),
+          nor ? nor.getX(i) : 0, nor ? nor.getY(i) : 1, nor ? nor.getZ(i) : 0);
+        if (c) { r *= c[0]; g *= c[1]; b *= c[2]; }
+      }
+      if (ao > 0 && nor) {
+        const ny = nor.getY(i);
+        if (ny < 0) {
+          // Downward faces never see sky or sun: soot and permanent shade.
+          const d = -ny;
+          const s = 1 - 0.42 * ao * d * d * (3 - 2 * d);
+          r *= s; g *= s; b *= s;
+        } else {
+          // Upward faces collect pale desert dust.
+          const d = 0.15 * ao * ny * ny;
+          r *= 1 + d * 1.06; g *= 1 + d * 0.99; b *= 1 + d * 0.84;
+        }
+      }
+      if (splash > 0) {
+        const h = (y - groundY) * (1 / 0.75);
+        if (h < 1) {
+          const s = h > 0 ? 1 - h : 1;
+          const k = splash * s * s;
+          const f = 1 - 0.30 * k;
+          r *= f; g *= f * (1 - 0.09 * k); b *= f * (1 - 0.19 * k);
+        }
+      }
+    }
+    const o = i * 3;
+    arr[o] = r; arr[o + 1] = g; arr[o + 2] = b;
+  }
+  col.needsUpdate = true;
   return geo;
 }
 
@@ -545,13 +669,17 @@ export class Batcher {
   /**
    * @param {THREE.BufferGeometry} geo  source geometry (not retained)
    * @param {THREE.Matrix4|null} matrix world transform
-   * @param {object} def { mat, surface, cast, receive, collide, tiling, chunk }
+   * @param {object} def { mat, surface, cast, receive, collide, tiling, chunk,
+   *                       tint, ao, groundY, paint }
    */
   add(geo, matrix, def) {
     if (!geo) return;
     const g = geo.clone();
     normalizeGeo(g);
     if (matrix) g.applyMatrix4(matrix);
+    // Painted *after* the transform: cavity shading reads world normals and the
+    // splash line reads world height, so neither works in local space.
+    paintGeometry(g, def);
 
     let cx = 0, cz = 0;
     if (matrix) { cx = matrix.elements[12]; cz = matrix.elements[14]; }
@@ -630,7 +758,10 @@ export class InstanceBatcher {
   add(key, geo, matrix, def = {}) {
     let g = this.groups.get(key);
     if (!g) {
-      g = { geo: normalizeGeo(geo.clone()), matrices: [], colors: [], def };
+      // One prototype, many transforms: only the normal-driven part of the paint
+      // is meaningful here, and per-instance colour goes through `def.color`.
+      const proto = paintGeometry(normalizeGeo(geo.clone()), { tint: def.tint, ao: def.ao });
+      g = { geo: proto, matrices: [], colors: [], def };
       this.groups.set(key, g);
     }
     g.matrices.push(matrix.clone());
