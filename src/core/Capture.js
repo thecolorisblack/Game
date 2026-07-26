@@ -15,6 +15,9 @@ export class Capture {
     this._remaining = 0;
     this._onFrame = null;
     window.__CAPTURE__ = this;
+    // Diagnostic scripts run in page context and need to construct three
+    // objects (swapping in a flat material to isolate shading from geometry).
+    window.__THREE__ = THREE;
   }
 
   init() {

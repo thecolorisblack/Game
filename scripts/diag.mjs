@@ -33,28 +33,70 @@ const PORT = parseInt(args.port || '4174', 10);
  */
 const VARIANTS = [
   ['00-baseline', () => {}],
-  ['01-debug-raw', (g) => { g.postfx.debug = 'raw'; }],
-  ['02-debug-depth', (g) => { g.postfx.debug = 'depth'; }],
-  ['03-debug-normal', (g) => { g.postfx.debug = 'normal'; }],
-  ['04-debug-ao', (g) => { g.postfx.debug = 'ao'; }],
-  ['05-debug-velocity', (g) => { g.postfx.debug = 'velocity'; }],
-  ['06-no-volumetrics', (g) => { g.postfx.debug = null; g.settings.volumetrics = false; }],
-  ['07-no-vol-no-bloom', (g) => { g.settings.bloomLevels = 0; }],
-  ['08-no-vol-bloom-taa', (g) => { g.settings.taa = false; }],
-  ['09-no-post-at-all', (g) => {
-    g.settings.ssao = false; g.settings.ssr = false; g.settings.dof = false;
-    g.settings.motionBlur = false;
+  ['01-hide-transparent', (g) => {
+    // Anything that does not write depth is drawn unsorted after the opaque
+    // pass; a single oversized one of these veils the whole frame.
+    g.__hidden = [];
+    g.scene.traverse((o) => {
+      if (!o.visible || !(o.isMesh || o.isInstancedMesh || o.isPoints || o.isSprite)) return;
+      const ms = Array.isArray(o.material) ? o.material : [o.material];
+      if (ms.some((m) => m && (m.transparent || m.depthWrite === false || m.blending === 2))) {
+        o.visible = false; g.__hidden.push(o);
+      }
+    });
+    console.log('[diag] hid ' + g.__hidden.length + ' transparent objects');
   }],
-  ['10-no-fog', (g) => {
-    g.scene.fog = null;
-    if (g.world?.fogBase !== undefined) g.world.fogBase = 0;
-    if (g.postfx?.options) g.postfx.options.volumetricDensity = 0;
+  ['02-restore-hide-vfx', (g) => {
+    for (const o of g.__hidden || []) o.visible = true;
+    g.__hidden = [];
+    const roots = [];
+    g.scene.traverse((o) => {
+      const n = (o.name || '').toLowerCase();
+      if (n.includes('vfx') || n.includes('particle') || n.includes('ambient') || n.includes('dust')) roots.push(o);
+    });
+    for (const o of roots) { o.visible = false; g.__hidden.push(o); }
+    console.log('[diag] vfx roots hidden: ' + roots.map((o) => o.name).join(','));
   }],
-  ['11-restore-all', (g) => {
-    g.settings.volumetrics = true; g.settings.bloomLevels = 6; g.settings.taa = true;
-    g.settings.ssao = true; g.settings.ssr = true; g.settings.dof = true;
-    g.settings.motionBlur = true; g.postfx.debug = null;
+  ['03-restore-hide-ai', (g) => {
+    for (const o of g.__hidden || []) o.visible = true;
+    g.__hidden = [];
+    g.scene.traverse((o) => {
+      const ms = Array.isArray(o.material) ? o.material : [o.material];
+      if (ms.some((m) => m && /^ai_/.test(m.name || ''))) { o.visible = false; g.__hidden.push(o); }
+    });
+    console.log('[diag] hid ' + g.__hidden.length + ' ai meshes');
   }],
+  ['04-world-only', (g) => {
+    for (const o of g.__hidden || []) o.visible = true;
+    g.__hidden = [];
+    for (const child of [...g.scene.children]) {
+      if (child.isLight || child === g.world?.root) continue;
+      if (child.visible) { child.visible = false; g.__hidden.push(child); }
+    }
+    console.log('[diag] scene children: ' + g.scene.children.map((c) => `${c.name || c.type}:${c.visible}`).join(' '));
+  }],
+  ['05-world-only-basic', (g) => {
+    // Replace every world material with flat white: isolates geometry and
+    // visibility from shading. If this reads as a solid town, meshes are fine.
+    const THREE = window.__THREE__;
+    if (!THREE) { console.log('[diag] no THREE handle'); return; }
+    g.__swapped = [];
+    g.world?.root?.traverse((o) => {
+      if (!o.isMesh && !o.isInstancedMesh) return;
+      g.__swapped.push([o, o.material]);
+      o.material = new THREE.MeshBasicMaterial({ color: 0xbbbbbb });
+    });
+    console.log('[diag] swapped ' + g.__swapped.length + ' world materials to basic');
+  }],
+  ['06-restore', (g) => {
+    for (const [o, m] of g.__swapped || []) o.material = m;
+    g.__swapped = [];
+    for (const o of g.__hidden || []) o.visible = true;
+    g.__hidden = [];
+  }],
+  ['07-debug-normal', (g) => { g.postfx.debug = 'normal'; }],
+  ['08-debug-ao', (g) => { g.postfx.debug = 'ao'; }],
+  ['09-final', (g) => { g.postfx.debug = null; }],
 ];
 
 async function waitFor(url, ms = 60000) {
