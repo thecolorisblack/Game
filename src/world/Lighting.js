@@ -214,7 +214,7 @@ export class Lighting {
     const dayCurve = smoothstep(-0.05, 0.25, y);
     const lowSun = smoothstep(0.40, -0.03, y);
 
-    const sunIntensity = 6.4 * dayCurve * compensate;
+    const sunIntensity = 7.6 * dayCurve * compensate;
     this.sunColor.copy(ext);
 
     const moonIntensity = 0.34 * night;
@@ -246,11 +246,17 @@ export class Lighting {
     );
     this.hemi.color.copy(skyFill);
     this.hemi.groundColor.copy(groundFill);
-    this.hemi.intensity = lerp(0.55, 0.85, dayFactor);
+    // The hemisphere and the sky probe are both ambient, and by day they were
+    // both running at full strength — the same sky counted twice. That is what
+    // filled every shadow to within a stop of the sunlit side and left the town
+    // reading flat. The probe is the physically-derived one, so it keeps the
+    // budget and the hemisphere drops to a shaping term; at night, when the
+    // probe is nearly black, the hemisphere is all there is and it stays up.
+    this.hemi.intensity = lerp(0.55, 0.30, dayFactor);
 
     const scene = this.game.scene;
     if ('environmentIntensity' in scene) {
-      scene.environmentIntensity = lerp(1.45, 1.0, dayFactor);
+      scene.environmentIntensity = lerp(1.45, 0.85, dayFactor);
     }
 
     /* ---- fog ---- */

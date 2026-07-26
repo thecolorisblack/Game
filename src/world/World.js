@@ -162,7 +162,7 @@ export class World {
       case 'laundry0': return this._canopy(0xf2f5f7, 'laundry0');
       case 'laundry1': return this._canopy(0xb6d2e2, 'laundry1');
       case 'laundry2': return this._canopy(0xf0cb95, 'laundry2');
-      case 'produce': return this.game.materials.variant('plaster', {
+      case 'produce': return v('plaster', {
         scale: 1 / 0.35, color: 0xffffff, roughness: 0.55, metalness: 0, name: 'produce',
       });
       default: return null;

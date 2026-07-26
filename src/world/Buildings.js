@@ -271,21 +271,6 @@ export class Buildings {
         tint: [0.22, 0.21, 0.22], ao: 0,
       });
 
-    // Reveal: the four inner faces of the opening, in shadow all day. Without
-    // them the wall reads as a card with a hole cut in it.
-    const rv = at(0, -0.02);
-    const rt = 0.055;
-    const reveal = {
-      mat: 'concrete', surface: 'concrete', cast: false, collide: false,
-      tint: [0.34, 0.32, 0.30], ao: 0,
-    };
-    for (const s of [-1, 1]) {
-      const q = at(s * (width * 0.5 - rt * 0.5), -0.02);
-      b.put(bevelBox(rt, h, 0.30, 0.006), trs(q[0], cy, q[1], yaw), reveal);
-    }
-    b.put(bevelBox(width, rt, 0.30, 0.006), trs(rv[0], y1 - rt * 0.5, rv[1], yaw), reveal);
-    b.put(bevelBox(width, rt, 0.30, 0.006), trs(rv[0], y0 + rt * 0.5, rv[1], yaw), reveal);
-
     if (!opts.noGlass) {
       const gp = at(0, 0.005);
       b.put(bevelBox(width - 0.13, h - 0.13, 0.018, 0.004),
@@ -403,7 +388,7 @@ export class Buildings {
 
   /** Steel railing: posts, top and mid rail, vertical bars, occasional bow. */
   _railing(b, x, z, yaw, width, y, height, ornate) {
-    const rail = { mat: 'metal_rusted', surface: 'metal', tiling: 1 };
+    const rail = { mat: 'metal_rusted', surface: 'metal', tiling: 1, trim: true };
     const posts = Math.max(2, Math.round(width / 1.1));
     for (let i = 0; i <= posts; i++) {
       const px = x + (i / posts - 0.5) * width * Math.cos(yaw);

@@ -55,6 +55,25 @@ export class Foliage {
     this.game = world.game;
   }
 
+  /**
+   * Per-plant colour.
+   *
+   * One foliage bake across two thousand instances is a wall of identical
+   * green. Instanced colour costs three floats per instance and no draw call
+   * (the world's materials all read the colour channel), so every bush gets its
+   * own value and its own drift between dusty olive and scorched yellow — which
+   * is what stops the scrub from reading as a repeating texture.
+   */
+  _leafColor(rng, dry = 0.5) {
+    const v = rng.range(0.62, 1.22);
+    const d = Math.min(1, Math.max(0, dry + rng.range(-0.30, 0.30)));
+    return new THREE.Color(
+      v * (0.92 + 0.46 * d),
+      v * (1.0 - 0.10 * d),
+      v * (0.94 - 0.42 * d),
+    );
+  }
+
   build(ctx) {
     this.ctx = ctx;
     this.rng = this.world.rng.fork(0x0f01);
@@ -119,7 +138,10 @@ export class Foliage {
       this.ctx.instancer.add(outer ? 'frondA' : 'frondB',
         outer ? this.frondA : this.frondB,
         trs(tipX, tipY + 0.30, tipZ, a, s, s, s, 0, pitch),
-        { mat: 'foliage', surface: 'foliage', cast: true, receive: true, collide: false });
+        {
+          mat: 'foliage', surface: 'foliage', cast: true, receive: true, collide: false,
+          color: this._leafColor(rng, 0.30),
+        });
     }
 
     // dates
@@ -138,7 +160,9 @@ export class Foliage {
       const a = (i / 5) * 6.283 + rng.range(-0.2, 0.2);
       this.ctx.instancer.add('frondB', this.frondB,
         trs(tipX, tipY - 0.15, tipZ, a, 0.7, 0.7, 0.7, 0, rng.range(1.15, 1.5)),
-        { mat: 'foliage', surface: 'foliage', cast: true, collide: false });
+        // dead skirt: brown, and much darker than the live crown above it
+        { mat: 'foliage', surface: 'foliage', cast: true, collide: false,
+          color: this._leafColor(rng, 1.0) });
     }
 
     // a collider so the player cannot walk through the trunk
@@ -163,12 +187,13 @@ export class Foliage {
       placed++;
       const cards = rng.int(3, 5);
       const s = rng.range(0.55, 1.25);
+      const bush = this._leafColor(rng, 0.55);
       for (let k = 0; k < cards; k++) {
         this.ctx.instancer.add('bush', this.bushCard,
           trs(x + rng.range(-0.2, 0.2), y - 0.06, z + rng.range(-0.2, 0.2),
             rng.range(0, 6.283), s, s * rng.range(0.8, 1.2), s,
             rng.range(-0.18, 0.18), rng.range(-0.18, 0.18)),
-          { mat: 'foliage', surface: 'foliage', cast: true, collide: false });
+          { mat: 'foliage', surface: 'foliage', cast: true, collide: false, color: bush });
       }
     }
   }
@@ -188,12 +213,13 @@ export class Foliage {
       const y = terrain.heightAt(x, z);
       placed++;
       const s = rng.range(0.5, 1.15);
+      const tuft = this._leafColor(rng, 0.85);
       for (let k = 0; k < 2; k++) {
         this.ctx.instancer.add('grass', this.grassCard,
           trs(x + rng.range(-0.12, 0.12), y - 0.04, z + rng.range(-0.12, 0.12),
             rng.range(0, 6.283), s, s * rng.range(0.7, 1.3), s,
             rng.range(-0.12, 0.12), rng.range(-0.12, 0.12)),
-          { mat: 'foliage', surface: 'foliage', cast: false, collide: false });
+          { mat: 'foliage', surface: 'foliage', cast: false, collide: false, color: tuft });
       }
     }
   }

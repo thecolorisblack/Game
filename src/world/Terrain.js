@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { MAP, ROADS, POTHOLES, BUILDINGS } from './Layout.js';
 import { fbm2, ridge2, smoothstep, clamp, lerp } from './Rng.js';
-import { bevelBox, heightfieldGeo, trs } from './GeoUtil.js';
+import { bevelBox, heightfieldGeo, trs, ensureColor } from './GeoUtil.js';
 
 /**
  * Ground.
@@ -148,6 +148,7 @@ export class Terrain {
     /* --- playable ground ------------------------------------------- */
     const ground = heightfieldGeo(-half, -half, half, half, step,
       (x, z) => this.height(x, z), 1);
+    this._paintGround(ground);
     const groundMesh = new THREE.Mesh(ground, world.mat('sand', { tiling: 1, triplanar: false }));
     groundMesh.name = 'terrain.ground';
     groundMesh.receiveShadow = true;
@@ -159,6 +160,7 @@ export class Terrain {
 
     /* --- distant terrain ------------------------------------------- */
     const far = this._farRing(half - 4, MAP.farRadius);
+    ensureColor(far);
     // Background only: no macro variation, no detail normal, no parallax.
     // It covers a third of the screen and none of that detail survives 200 m.
     const farMesh = new THREE.Mesh(far, world.mat('dirt', {
@@ -177,6 +179,42 @@ export class Terrain {
     for (const r of ROADS) if (r.kerb) this._kerbs(batcher, r);
 
     return this;
+  }
+
+  /**
+   * Ground value.
+   *
+   * One sand material stretched over 190 m is the flattest thing in the level:
+   * every square metre sits at the same brightness, so the eye reads it as
+   * paper. This breaks it into large patches of bleached sand and darker
+   * gravelly ground, then lays a cooler, dirtier apron either side of every
+   * carriageway where the traffic drags grit off the asphalt. It costs one
+   * float3 per vertex on a grid that is already built.
+   */
+  _paintGround(geo) {
+    const col = ensureColor(geo);
+    const pos = geo.attributes.position;
+    const arr = col.array;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), z = pos.getZ(i);
+      // Two scales: broad drifts, then a finer break so the patches have edges.
+      const broad = fbm2(x * 0.021, z * 0.021, 3, 2.07, 0.5, 41);
+      const fine = fbm2(x * 0.115, z * 0.115, 2, 2.0, 0.5, 613);
+      const patch = clamp(broad * 0.78 + fine * 0.22, 0, 1);
+      let v = lerp(0.68, 1.16, patch);
+      let r = v, g = v * (0.96 + 0.06 * patch), b = v * (0.88 + 0.14 * patch);
+
+      const road = this.roadAt(x, z);
+      if (road) {
+        // Grit and oil either side of the carriageway: darker and much cooler.
+        const k = road.w * road.w * 0.62;
+        r *= 1 - 0.34 * k; g *= 1 - 0.30 * k; b *= 1 - 0.16 * k;
+      }
+      const o = i * 3;
+      arr[o] = r; arr[o + 1] = g; arr[o + 2] = b;
+    }
+    col.needsUpdate = true;
+    return geo;
   }
 
   _farRing(r0, r1) {
@@ -239,6 +277,8 @@ export class Terrain {
     const pos = new Float32Array(verts * 3);
     const nor = new Float32Array(verts * 3);
     const uv = new Float32Array(verts * 2);
+    const rgb = new Float32Array(verts * 3);
+    const asphalt = r.kind === 'asphalt';
     let p = 0;
     for (let j = 0; j <= along; j++) {
       const t = j / along;
@@ -254,6 +294,21 @@ export class Terrain {
         const inv = 1 / Math.sqrt(gx * gx + gz * gz + 1);
         nor[p * 3] = -gx * inv; nor[p * 3 + 1] = inv; nor[p * 3 + 2] = -gz * inv;
         uv[p * 2] = s; uv[p * 2 + 1] = t * len;
+
+        // The road is the darkest value in the level and the sand is nearly the
+        // brightest — that contrast is what makes the street plan legible at a
+        // glance. It is only believable if the transition is not a hard line, so
+        // the outer eighth of the carriageway lifts steeply toward sand as the
+        // drift creeps over the edge, and the two wheel tracks polish down.
+        const across01 = Math.abs(s) / w;
+        const drift = smoothstep(0.74, 1.0, across01);
+        const rut = Math.exp(-((across01 - 0.46) ** 2) * 26) * 0.30;
+        const grain = fbm2(x * 0.16, z * 0.16, 2, 2.0, 0.5, 907);
+        let v = asphalt ? 0.80 + 0.34 * grain - rut : 0.86 + 0.30 * grain;
+        v *= 1 + drift * (asphalt ? 5.4 : 0.55);
+        rgb[p * 3] = v * (asphalt ? 1.0 + drift * 0.16 : 1.04);
+        rgb[p * 3 + 1] = v * (asphalt ? 1.0 + drift * 0.04 : 0.98);
+        rgb[p * 3 + 2] = v * (asphalt ? 1.02 - drift * 0.24 : 0.88);
         p++;
       }
     }
@@ -274,13 +329,15 @@ export class Terrain {
     g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
     g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
     g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+    g.setAttribute('color', new THREE.BufferAttribute(rgb, 3));
     g.setIndex(new THREE.BufferAttribute(idx, 1));
 
     batcher.add(g, null, {
-      mat: r.kind === 'asphalt' ? 'asphalt' : 'dirt',
-      surface: r.kind === 'asphalt' ? 'concrete' : 'dirt',
+      mat: asphalt ? 'asphalt' : 'dirt',
+      surface: asphalt ? 'concrete' : 'dirt',
       cast: false, receive: true, collide: true,
       chunk: `road-${r.id}`,
+      paint: false,          // the ribbon carries its own hand-authored colour
     });
     g.dispose();
   }
@@ -315,11 +372,20 @@ export class Terrain {
         if (rng.chance(0.05)) continue;                       // missing stone
         const sunk = rng.chance(0.12) ? rng.range(0.04, 0.10) : 0;
         const h = 0.42;
+        // The kerb is the brightest thing at ground level and the pavement
+        // behind it sits a stop down, so the line between road and footway reads
+        // from the far end of the boulevard. Per-stone value jitter stops the
+        // run from looking extruded.
+        const jitter = rng.range(-0.09, 0.09);
         batcher.add(
           bevelBox(0.30, h, stone * rng.range(0.93, 0.99), 0.022,
             { uvOffset: [x, 0, z] }),
           trs(x, roadY + 0.15 - h * 0.5 - sunk, z, yaw + rng.range(-0.02, 0.02)),
-          { mat: 'concrete', surface: 'concrete', cast: true, receive: true },
+          {
+            mat: 'concrete', surface: 'concrete', cast: true, receive: true,
+            tint: [1.20 + jitter, 1.15 + jitter, 1.04 + jitter],
+            groundY: roadY + 0.15,
+          },
         );
 
         // sidewalk slab, flush with the top of the kerb
@@ -329,7 +395,11 @@ export class Terrain {
         batcher.add(
           bevelBox(2.1, 0.5, stone * 0.98, 0.02, { uvOffset: [sx, 0, sz] }),
           trs(sx, roadY + 0.14 - 0.25 - sunk, sz, yaw + rng.range(-0.015, 0.015)),
-          { mat: 'concrete', surface: 'concrete', cast: false, receive: true, tiling: 1 },
+          {
+            mat: 'concrete', surface: 'concrete', cast: false, receive: true, tiling: 1,
+            tint: [0.86 + jitter * 0.5, 0.84 + jitter * 0.5, 0.80 + jitter * 0.5],
+            groundY: roadY + 0.14,
+          },
         );
       }
     }

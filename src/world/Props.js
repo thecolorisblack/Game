@@ -51,7 +51,20 @@ export class Props {
 
   /* ---------------------------------------------------------------- */
 
-  put(geo, matrix, def) { this.ctx.batcher.add(geo, matrix, def); }
+  /**
+   * Everything dropped in the street gets a ground reference so the vertex
+   * paint can put a splash line on it: the bottom of a barrel, a kerbside crate
+   * and a jersey barrier all pick up the same dirt at the same height, which is
+   * what makes a set of props look like they have been standing there.
+   */
+  put(geo, matrix, def) {
+    let d = def;
+    if (matrix && d.groundY === undefined) {
+      d = { ...d, groundY: this.ctx.terrain.heightAt(matrix.elements[12], matrix.elements[14]) };
+    }
+    this.ctx.batcher.add(geo, matrix, d);
+  }
+
   inst(key, geo, matrix, def) { this.ctx.instancer.add(key, geo, matrix, def); }
 
   /* ---------------------------------------------------------------- */
@@ -513,7 +526,7 @@ export class Props {
           const h = w.h * rng.range(0.94, 1.02);
           this.put(bevelBox(len / panels, h, 0.28, 0.03, { uvOffset: [len * (t0 + t1) * 0.5, h * 0.5, 0] }),
             trs(mx, y + h * 0.5, mz, yaw),
-            { mat: w.mat, surface: 'concrete', tiling: 1 });
+            { mat: w.mat, surface: 'concrete', tiling: 1, tint: w.tint });
           this.put(bevelBox(len / panels + 0.02, 0.12, 0.40, 0.025),
             trs(mx, y + h + 0.06, mz, yaw), { mat: 'concrete', surface: 'concrete' });
           // pilaster every other panel
