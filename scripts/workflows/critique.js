@@ -14,9 +14,19 @@ export const meta = {
  * traceable to a frame. Fixers are grouped by the module that owns the files, so
  * two agents never touch the same directory.
  */
-const shotDir = (args && args.shotDir) || 'shots'
-const round = (args && args.round) || 1
-const shots = (args && args.shots) || []
+// args can arrive already parsed or as a JSON string depending on how the run
+// was launched; normalise rather than silently running zero critics.
+let input = args
+if (typeof input === 'string') {
+  try { input = JSON.parse(input) } catch (e) { input = null }
+}
+if (!input || !Array.isArray(input.shots) || !input.shots.length) {
+  throw new Error('critique: no shots supplied; args was ' + JSON.stringify(args))
+}
+
+const shotDir = input.shotDir || 'shots'
+const round = input.round || 1
+const shots = input.shots
 
 const OWNERS = {
   world: 'src/world/',
