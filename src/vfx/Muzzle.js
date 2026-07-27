@@ -149,7 +149,8 @@ export class MuzzleFlash {
         toneMapped: false,
       });
       const petals = new THREE.Mesh(this.variants[0], petalMat);
-      petals.frustumCulled = false;
+      // Baked geometry with a real bounding sphere, so this culls normally.
+      petals.frustumCulled = true;
       petals.castShadow = petals.receiveShadow = false;
       petals.visible = false;
       petals.renderOrder = 18;
@@ -165,7 +166,7 @@ export class MuzzleFlash {
         toneMapped: false,
       });
       const flare = new THREE.Mesh(this.flareGeometry, flareMat);
-      flare.frustumCulled = false;
+      flare.frustumCulled = true;
       flare.castShadow = flare.receiveShadow = false;
       flare.visible = false;
       flare.renderOrder = 19;

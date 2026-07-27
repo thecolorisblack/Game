@@ -10,7 +10,7 @@
  * only; doubling the sound here would flam.
  */
 
-import { clamp01, rgba, Ease, COLOR } from './Style.js';
+import { clamp01, rgba, hair, Ease, COLOR } from './Style.js';
 import { glowDot } from './Draw.js';
 
 const MAX = 10;
@@ -134,7 +134,7 @@ export class Hitmarkers {
       }
 
       ctx.strokeStyle = 'rgba(0,0,0,0.5)';
-      ctx.lineWidth = lw + 2.4;
+      ctx.lineWidth = lw + hair(s, 2.4);
       ctx.stroke(path);
       ctx.strokeStyle = color;
       ctx.lineWidth = lw;
@@ -145,7 +145,7 @@ export class Hitmarkers {
         const d = (gap + len) * 0.86;
         ctx.globalAlpha = alpha * 0.75;
         ctx.strokeStyle = rgba(COLOR.accentHot, 1);
-        ctx.lineWidth = Math.max(1.1, 1.5 * s);
+        ctx.lineWidth = hair(s, 1.5);
         ctx.beginPath();
         ctx.moveTo(0, -d); ctx.lineTo(d, 0); ctx.lineTo(0, d); ctx.lineTo(-d, 0);
         ctx.closePath();
@@ -156,7 +156,7 @@ export class Hitmarkers {
         const rr = (gap + len) * (1.0 + Ease.outCubic(k) * 0.9);
         ctx.globalAlpha = alpha * 0.55 * (1 - k);
         ctx.strokeStyle = rgba(COLOR.danger, 1);
-        ctx.lineWidth = Math.max(1.2, 2.0 * s);
+        ctx.lineWidth = hair(s, 2.0);
         ctx.beginPath();
         ctx.arc(0, 0, rr, 0, Math.PI * 2);
         ctx.stroke();

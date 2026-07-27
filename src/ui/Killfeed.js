@@ -7,8 +7,8 @@
  * between a feed that reads as designed and one that reads as a log.
  */
 
-import { clamp01, damp, rgba, Ease, Spring, COLOR } from './Style.js';
-import { drawText, measure } from './Type.js';
+import { clamp01, damp, rgba, hair, Ease, Spring, COLOR } from './Style.js';
+import { drawText, measure, inkBleed } from './Type.js';
 import { chamferPath } from './Draw.js';
 import { drawWeaponIcon, iconIdFor } from './WeaponIcons.js';
 
@@ -84,10 +84,12 @@ export class Killfeed {
   draw(ctx, view) {
     if (!this.rows.length) return;
     const s = view.scale;
-    const right = view.w - view.pad;
-    const top = view.pad + 2 * s;
     const rowH = 23 * s;
     const fs = 11 * s;
+    // Rows are anchored so the *backing plate* — which overhangs the text by
+    // 9 units — lands on the safe edge, not the text baseline box.
+    const right = view.right - 9 * s - inkBleed(fs, 0.14, 1.3);
+    const top = view.top + 2 * s;
     const tracking = 0.22;
 
     for (const r of this.rows) {
@@ -118,7 +120,7 @@ export class Killfeed {
       ctx.fill();
       if (r.byPlayer) {
         ctx.strokeStyle = rgba(COLOR.accent, 0.30);
-        ctx.lineWidth = Math.max(1, 1 * s);
+        ctx.lineWidth = hair(s, 1);
         ctx.stroke();
       }
 
@@ -154,7 +156,7 @@ function drawSkull(ctx, x, cy, w, color) {
   ctx.save();
   ctx.fillStyle = color;
   ctx.strokeStyle = 'rgba(2,4,6,0.55)';
-  ctx.lineWidth = Math.max(1, w * 0.10);
+  ctx.lineWidth = Math.max(0.5, w * 0.10);
   const p = new Path2D();
   // cranium
   p.moveTo(x + w * 0.12, y + h * 0.42);

@@ -192,7 +192,11 @@ export function drawText(ctx, text, x, y, opts = {}) {
   if (opts.baseline === 'middle') oy += size * 0.5;
   else if (opts.baseline === 'top') oy += size;
 
-  const lw = Math.max(0.85, size * weight);
+  // Floors here are sub-pixel on purpose. A 1-CSS-px floor is a fixed physical
+  // thickness, so at 960x540 it is twice the fraction of the frame it is at
+  // 1920x1080 — which is most of why the old HUD read heavier the smaller the
+  // window got. Stroke and halo are both strictly proportional to `size`.
+  const lw = Math.max(0.45, size * weight);
   ctx.save();
   ctx.lineJoin = 'miter';
   ctx.miterLimit = 2.4;
@@ -220,7 +224,7 @@ export function drawText(ctx, text, x, y, opts = {}) {
   if (opts.halo !== false) {
     const grow = typeof opts.halo === 'number' ? opts.halo : 2.1;
     ctx.strokeStyle = opts.haloColor || 'rgba(2,4,6,0.62)';
-    ctx.lineWidth = lw + Math.max(1.4, size * 0.055) * grow;
+    ctx.lineWidth = lw + Math.max(0.5, size * 0.10) * grow;
     ctx.lineJoin = 'round';
     ctx.lineCap = 'round';
     ctx.stroke(path);
@@ -242,6 +246,20 @@ export function drawText(ctx, text, x, y, opts = {}) {
 
   ctx.restore();
   return total;
+}
+
+/**
+ * Half-width that the stroke and its halo add *outside* a run's geometric box.
+ *
+ * `measure()` returns advances, not ink. A widget that anchors text flush to the
+ * safe area therefore paints roughly this much past the inset — small, but it is
+ * exactly the difference between "the layout respects the safe area" and "the
+ * layout nearly respects the safe area". Edge-hugging callers subtract it.
+ */
+export function inkBleed(size = 16, weight = 0.115, halo = 2.1) {
+  const lw = Math.max(0.45, size * weight);
+  const grow = halo === false ? 0 : (typeof halo === 'number' ? halo : 2.1);
+  return (lw + Math.max(0.5, size * 0.10) * grow) * 0.5;
 }
 
 /** Convenience: a label with the standard HUD kicker treatment. */

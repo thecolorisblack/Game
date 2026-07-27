@@ -184,7 +184,9 @@ export class World {
     const m = this.game.materials.variant('glass', {
       scale: 0.5,
       color: 0x141a1d,           // dark base: the reflection does the work
-      roughness: 0.04, metalness: 0.0,
+      // Not mirror-sharp: a 256 px sky probe sparkles under a 0.04 lobe when
+      // the camera moves, and real window glass has a little wave in it anyway.
+      roughness: 0.085, metalness: 0.0,
       transparent: false, opacity: 1.0, depthWrite: true, depthTest: true,
       side: THREE.FrontSide,
       envMapIntensity: 3.4, ior: 1.52, specularIntensity: 1.0,

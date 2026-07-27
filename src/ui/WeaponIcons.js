@@ -156,7 +156,7 @@ export function drawWeaponIcon(ctx, id, x, y, w, color = '#e6edf2', alpha = 1, o
 
   if (opts.halo !== false) {
     ctx.strokeStyle = opts.haloColor || 'rgba(2,4,6,0.55)';
-    ctx.lineWidth = Math.max(1.2, s * 0.035);
+    ctx.lineWidth = Math.max(0.5, s * 0.035);
     ctx.lineJoin = 'round';
     ctx.stroke(path);
   }

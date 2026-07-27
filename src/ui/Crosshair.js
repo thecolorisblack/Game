@@ -1,16 +1,35 @@
 /**
  * OPERATION BLACKOUT — dynamic crosshair.
  *
- * The reticle is not decorative: the gap between the strokes is the *actual*
+ * The reticle is not decorative: the gap between the strokes tracks the *actual*
  * projected radius of the weapon's spread cone at the current stance, movement
  * and accumulated bloom, converted through the live camera FOV. If the strokes
  * are wide, your bullets really are going wide.
+ *
+ * Two things are deliberate here:
+ *
+ *   · **It is tight.** The cone radius is mapped through `GAP_K` rather than
+ *     used raw. Drawn 1:1 the strokes sit 25-40 px off centre even standing
+ *     still, which reads as four lonely ticks around a large hole. Compressing
+ *     the mapping and shortening the arms keeps the whole reticle inside a small
+ *     disc while preserving the *ordering* — more spread is always more gap.
+ *   · **Bloom is legible.** Firing and moving each add their own term on top of
+ *     the weapon's cone, and past a threshold a faint ring is drawn at the arm
+ *     tips. A reticle whose bloom you cannot see is just a static crosshair.
  *
  * Reads `game.weapons.weapon.spread(ctx)` when it exists and degrades to a
  * static reticle when the weapon system is still a placeholder.
  */
 
-import { clamp, clamp01, damp, rgba, Ease, Spring, COLOR } from './Style.js';
+import { clamp, clamp01, damp, rgba, hair, Ease, Spring, COLOR } from './Style.js';
+
+/** Projected cone radius -> drawn gap. Sub-1 keeps the reticle compact. */
+const GAP_K = 0.55;
+/** Innermost gap, design units — the dot needs breathing room, not a courtyard. */
+const GAP_MIN = 3.0;
+/** How far a full fire-kick / full sprint pushes the arms out, design units. */
+const FIRE_BLOOM = 15;
+const MOVE_BLOOM = 8;
 
 export class Crosshair {
   constructor(game) {
@@ -26,12 +45,14 @@ export class Crosshair {
     this.adsFade = 0;
     this.sprintFade = 0;
     this.dotPulse = 0;
+    this.moveBloom = 0;      // 0..1, how much of the gap movement is paying for
+    this.bloom = 0;          // 0..1, total non-resting bloom — drives the ring
     this._noAmmoBlink = 0;
   }
 
   onFire() {
-    this.fireKick = Math.min(1.6, this.fireKick + 0.55);
-    this.gap.nudge(120);
+    this.fireKick = Math.min(1.8, this.fireKick + 0.62);
+    this.gap.nudge(150);
   }
 
   onHit(headshot, kill) {
@@ -74,14 +95,27 @@ export class Crosshair {
     const h = ctxState.h;
     const half = Math.tan(vfov * 0.5);
     const px = half > 1e-4 ? (h * 0.5) * Math.tan(coneRad) / half : 12;
-    this.spreadPx = clamp(px, 4, h * 0.34);
+    this.spreadPx = clamp(px, 0, h * 0.30);
 
-    this.fireKick = damp(this.fireKick, 0, 9, dt);
+    this.fireKick = damp(this.fireKick, 0, 8, dt);
+
+    // Movement bloom is computed here rather than left to the weapon so the
+    // reticle still breathes when you run, whatever `spread()` chooses to model.
+    const maxSpeed = player?.sprintSpeed || player?.maxSpeed || 6.2;
+    const moving = clamp01((player?.speed ?? 0) / maxSpeed) * (1 - this.adsFade * 0.75);
+    this.moveBloom = damp(this.moveBloom, player?.grounded === false ? 1 : moving, 7, dt);
 
     const s = ctxState.scale;
-    this.gap.target = this.spreadPx + this.fireKick * 5 * s;
+    const rest = GAP_MIN * s + this.spreadPx * GAP_K;
+    const fire = clamp01(this.fireKick / 1.8);
+    const bloomPx = fire * FIRE_BLOOM * s + this.moveBloom * MOVE_BLOOM * s;
+    this.bloom = clamp01(bloomPx / (18 * s));
+
+    this.gap.target = rest + bloomPx;
     this.gap.update(dt);
-    this.len.target = clamp(9 * s + this.spreadPx * 0.14, 8 * s, 22 * s);
+    // Arms grow a little with bloom so the reticle gains weight as it opens
+    // instead of just drifting apart.
+    this.len.target = clamp(6.5 * s + this.spreadPx * 0.20 + bloomPx * 0.30, 6 * s, 18 * s);
     this.len.update(dt);
 
     // --- visibility ---------------------------------------------------
@@ -107,7 +141,9 @@ export class Crosshair {
     const cx = view.cx;
     const cy = view.cy;
     const s = view.scale;
-    const gap = Math.max(2, this.gap.value);
+    // The spring is allowed to overshoot on a burst — that punch is the point —
+    // but never far enough to fling the arms out of the middle of the frame.
+    const gap = clamp(this.gap.value, GAP_MIN * s, view.h * 0.22);
     const len = this.len.value;
     const flash = clamp01(this.flash);
     const kill = clamp01(this.kill);
@@ -115,11 +151,27 @@ export class Crosshair {
     const core = kill > 0.02
       ? rgba(COLOR.danger, 1)
       : (flash > 0.02 ? '#ffffff' : rgba(COLOR.ink, 0.94));
-    const lw = Math.max(1.7, 2.2 * s) * (1 + flash * 0.45 + kill * 0.5);
+    // Heavier than before and scaled purely by `s`: the old
+    // `Math.max(1.7, 2.2 * s)` floor is what made the reticle read thin at
+    // 1080p and chunky at 540p.
+    const lw = hair(s, 2.6) * (1 + flash * 0.45 + kill * 0.5);
 
     ctx.save();
     ctx.globalAlpha = a;
     ctx.lineCap = 'butt';
+
+    // Bloom ring at the arm tips. Only present while the reticle is actually
+    // open, so it reads as "you are spraying / you are running", not as chrome.
+    if (this.bloom > 0.04) {
+      const ringR = gap + len * 0.5;
+      ctx.globalAlpha = a * 0.30 * this.bloom;
+      ctx.strokeStyle = core;
+      ctx.lineWidth = hair(s, 1.1);
+      ctx.beginPath();
+      ctx.arc(cx, cy, ringR, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.globalAlpha = a;
+    }
 
     // dark backing so the reticle survives a bright skyline
     const path = new Path2D();
@@ -132,32 +184,17 @@ export class Crosshair {
     add(cx, cy + r, cx, cy + r + L);
 
     ctx.strokeStyle = 'rgba(0,0,0,0.55)';
-    ctx.lineWidth = lw + 2.2;
+    ctx.lineWidth = lw + hair(s, 2.6);
     ctx.stroke(path);
     ctx.strokeStyle = core;
     ctx.lineWidth = lw;
     ctx.stroke(path);
 
-    // outward taper marks: a second, shorter pair sitting just outside the
-    // main strokes gives the reticle body without thickening it.
-    if (gap > 14 * s) {
-      const t = clamp01((gap - 14 * s) / (34 * s));
-      ctx.globalAlpha = a * 0.42 * t;
-      const p2 = new Path2D();
-      const r2 = r + L + 3 * s;
-      p2.moveTo(cx - r2, cy - 0); p2.lineTo(cx - r2 - 3 * s, cy);
-      p2.moveTo(cx + r2, cy - 0); p2.lineTo(cx + r2 + 3 * s, cy);
-      ctx.strokeStyle = core;
-      ctx.lineWidth = lw * 0.8;
-      ctx.stroke(p2);
-      ctx.globalAlpha = a;
-    }
-
     // centre dot
     const dotR = (1.5 + this.dotPulse * 2.0) * s;
     ctx.fillStyle = 'rgba(0,0,0,0.6)';
     ctx.beginPath();
-    ctx.arc(cx, cy, dotR + 1.1, 0, Math.PI * 2);
+    ctx.arc(cx, cy, dotR + hair(s, 1.0), 0, Math.PI * 2);
     ctx.fill();
     ctx.fillStyle = kill > 0.02 ? rgba(COLOR.danger, 1) : rgba(COLOR.ink, 0.98);
     ctx.beginPath();
@@ -169,9 +206,9 @@ export class Crosshair {
       const b = Ease.outCubic(this._noAmmoBlink);
       ctx.globalAlpha = a * b * 0.8;
       ctx.strokeStyle = rgba(COLOR.accent, 1);
-      ctx.lineWidth = 1.4 * s;
+      ctx.lineWidth = hair(s, 1.4);
       ctx.beginPath();
-      ctx.arc(cx, cy, (gap + len) * 0.72 + (1 - b) * 12 * s, 0, Math.PI * 2);
+      ctx.arc(cx, cy, (gap + len) * 0.9 + (1 - b) * 12 * s, 0, Math.PI * 2);
       ctx.stroke();
     }
 

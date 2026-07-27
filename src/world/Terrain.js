@@ -302,9 +302,9 @@ export class Terrain {
         // drift creeps over the edge, and the two wheel tracks polish down.
         const across01 = Math.abs(s) / w;
         const drift = smoothstep(0.74, 1.0, across01);
-        const rut = Math.exp(-((across01 - 0.46) ** 2) * 26) * 0.30;
+        const rut = Math.exp(-((across01 - 0.46) ** 2) * 26) * 0.18;
         const grain = fbm2(x * 0.16, z * 0.16, 2, 2.0, 0.5, 907);
-        let v = asphalt ? 0.80 + 0.34 * grain - rut : 0.86 + 0.30 * grain;
+        let v = asphalt ? 0.60 + 0.30 * grain - rut : 0.86 + 0.30 * grain;
         v *= 1 + drift * (asphalt ? 5.4 : 0.55);
         rgb[p * 3] = v * (asphalt ? 1.0 + drift * 0.16 : 1.04);
         rgb[p * 3 + 1] = v * (asphalt ? 1.0 + drift * 0.04 : 0.98);

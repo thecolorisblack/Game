@@ -17,7 +17,7 @@
 import * as THREE from 'three';
 import { clamp, clamp01, damp, lerp, rgba, Ease, COLOR } from './Style.js';
 import { bakeSplatter, makeCanvas, ctx2d } from './Draw.js';
-import { drawText } from './Type.js';
+import { drawText, inkBleed } from './Type.js';
 
 const _v = new THREE.Vector3();
 const _f = new THREE.Vector3();
@@ -329,15 +329,49 @@ export class Vitals {
     }
   }
 
+  /**
+   * Bottom-left block layout, stacked *upward* from the safe-area floor.
+   *
+   * Everything here used to be positioned by subtracting ad-hoc offsets from
+   * `view.h - view.pad`, which put the numerals' baseline 20 units off the
+   * bottom with a 24-unit cap height and a condition bar crossing the numerals'
+   * own x-height. The block is now a single measured column: each row's extent
+   * is declared once, rows are stacked with explicit gaps, and the topmost row
+   * is wherever the stack ends up. Nothing overlaps and nothing crosses
+   * `view.bottom`.
+   */
+  _layout(view) {
+    const s = view.scale;
+    const numSize = 22 * s;
+    // Flush-left means flush *ink*: the numerals' stroke and halo straddle the
+    // anchor, so the anchor moves in by half of that.
+    const x = view.left + inkBleed(numSize, 0.135, 2.1);
+    const staminaH = 2.5 * s;
+    const barH = 4 * s;
+    const labelSize = 8 * s;
+
+    const staminaY = view.bottom - staminaH;      // last row sits on the floor
+    const barY = staminaY - 7 * s - barH;
+    const numBase = barY - 10 * s;                // baseline, glyphs rise from here
+    const labelBase = numBase - numSize - 9 * s;
+
+    return {
+      s, x, width: 132 * s,
+      labelBase, labelSize,
+      numBase, numSize,
+      barY, barH,
+      staminaY, staminaH,
+      top: labelBase - labelSize,
+    };
+  }
+
   /** Small numeric readout, bottom-left, above the stance/stamina strip. */
   drawReadout(ctx, view) {
-    const s = view.scale;
     const a = clamp01(this.readoutFade) * (this.game.state === 'dead' ? 0.3 : 1);
     if (a <= 0.02) return;
 
-    const x = view.pad;
-    const bottom = view.h - view.pad;
-    const numY = bottom - 20 * s;          // baseline of the big number
+    const L = this._layout(view);
+    const s = L.s;
     const hp = Math.round(this.rawHealth * (this.game.player?.maxHealth ?? 100));
     const crit = this.rawHealth < 0.34;
     const blink = crit ? 0.72 + 0.28 * Math.sin(this.lowPulse * Math.PI * 2) : 1;
@@ -346,38 +380,41 @@ export class Vitals {
     ctx.save();
     ctx.globalAlpha = a;
 
-    drawText(ctx, crit ? 'CRITICAL' : 'VITALS', x, numY - 32 * s, {
-      size: 8.5 * s, weight: 0.16, tracking: 0.52,
+    drawText(ctx, crit ? 'CRITICAL' : 'VITALS', L.x, L.labelBase, {
+      size: L.labelSize, weight: 0.16, tracking: 0.52,
       color: crit ? rgba(COLOR.danger, blink) : rgba(COLOR.inkDim, 0.85), halo: 1.2,
     });
 
-    drawText(ctx, String(hp).padStart(3, '0'), x, numY, {
-      size: 24 * s, weight: 0.135, tracking: 0.10, color: rgba(col, blink),
+    const numW = drawText(ctx, String(hp).padStart(3, '0'), L.x, L.numBase, {
+      size: L.numSize, weight: 0.135, tracking: 0.10, color: rgba(col, blink),
       glow: crit ? 0.35 * blink : 0, glowColor: col,
     });
 
-    // hairline condition bar, optically centred on the numerals
-    const bw = 104 * s;
-    const bx = x + 72 * s;
-    const by = numY - 12 * s;
+    // Condition bar: its own row under the numerals, full block width.
+    const bw = L.width;
+    const bx = L.x;
+    const by = L.barY;
     ctx.globalAlpha = a * 0.9;
     ctx.fillStyle = 'rgba(6,10,13,0.55)';
-    ctx.fillRect(bx, by, bw, 4 * s);
+    ctx.fillRect(bx, by, bw, L.barH);
     ctx.fillStyle = rgba(col, 0.9 * blink);
-    ctx.fillRect(bx, by, bw * this.health, 4 * s);
+    ctx.fillRect(bx, by, bw * this.health, L.barH);
     ctx.fillStyle = 'rgba(0,0,0,0.55)';
-    for (let i = 1; i < 5; i++) ctx.fillRect(bx + (bw * i) / 5, by, 1 * s, 4 * s);
+    const tick = Math.max(0.5, s);
+    for (let i = 1; i < 5; i++) ctx.fillRect(bx + (bw * i) / 5, by, tick, L.barH);
 
     if (this.regen > 0.05 && this.rawHealth < 0.999) {
+      // Rides beside the numerals rather than adding a row that would push the
+      // block through the floor when it appears.
       ctx.globalAlpha = a * this.regen * (0.5 + 0.3 * Math.sin(this.lowPulse * Math.PI * 4));
-      drawText(ctx, 'RECOVERING', bx, by + 16 * s, {
+      drawText(ctx, 'RECOVERING', L.x + numW + 11 * s, L.numBase, {
         size: 8 * s, weight: 0.16, tracking: 0.46, color: COLOR.friendly, halo: 1.1,
       });
     }
     ctx.restore();
   }
 
-  /** Stamina / sprint strip — sits directly under the vitals readout. */
+  /** Stamina / sprint strip — the bottom row of the same column. */
   drawStamina(ctx, view) {
     const p = this.game.player;
     const st = p?.stamina;
@@ -386,16 +423,13 @@ export class Vitals {
     const ratio = clamp01(st / maxSt);
     const a = clamp01((1 - ratio) * 3.2) * 0.9;
     if (a <= 0.02) return;
-    const s = view.scale;
-    const bw = 176 * s;
-    const bx = view.pad;
-    const by = view.h - view.pad - 5 * s;
+    const L = this._layout(view);
     ctx.save();
     ctx.globalAlpha = a;
     ctx.fillStyle = 'rgba(6,10,13,0.5)';
-    ctx.fillRect(bx, by, bw, 2.5 * s);
+    ctx.fillRect(L.x, L.staminaY, L.width, L.staminaH);
     ctx.fillStyle = rgba(ratio < 0.25 ? COLOR.danger : COLOR.inkDim, 0.95);
-    ctx.fillRect(bx, by, bw * ratio, 2.5 * s);
+    ctx.fillRect(L.x, L.staminaY, L.width * ratio, L.staminaH);
     ctx.restore();
   }
 }

@@ -2,13 +2,28 @@
  * OPERATION BLACKOUT — UI design tokens.
  *
  * One accent colour, one danger colour, one friendly colour, everything else is
- * a value of near-black or near-white. Sizes are authored against a 1600x900
- * reference frame and scaled by `uiScale()` so the HUD keeps its proportions
- * from a laptop panel to a 4K ultrawide without ever touching CSS pixels.
+ * a value of near-black or near-white.
+ *
+ * ## The one scale factor
+ *
+ * Every dimension in the HUD — type size, inset, stroke width, plate size — is
+ * authored in *design units* against a 900-unit-tall reference frame and
+ * multiplied by exactly one number, `uiScale()`, which is strictly linear in the
+ * **shorter viewport axis**. Nothing else is allowed to influence size: no
+ * `Math.max(1, ...)` pixel floors, no per-widget clamps, no sub-linear curves.
+ * That is what makes 960x540, 1280x720 and 1920x1080 render the same layout at
+ * three magnifications instead of three different designs.
+ *
+ * Insets come from `safeInset()` — 4% of the shorter axis, applied on all four
+ * edges. Nothing may cross it.
  */
 
 export const REF_W = 1600;
 export const REF_H = 900;
+/** The shorter-axis reference. All design units are 1/900 of the short axis. */
+export const REF_SHORT = 900;
+/** Safe-area inset as a fraction of the shorter viewport axis. */
+export const SAFE_FRACTION = 0.04;
 
 export const COLOR = {
   accent: '#e8b562',
@@ -109,12 +124,42 @@ export class Spring {
 /* ==================================================================== */
 
 /**
- * Scale factor for HUD elements. Sub-linear in the vertical so a very tall
- * window does not blow the ammo counter up to billboard size.
+ * The single scale factor. Strictly linear in the shorter viewport axis, so a
+ * design unit is always the same fraction of the frame: 1 unit = 1/900 of the
+ * short axis at every resolution.
+ *
+ * The old version was `pow(min(w/1600, h/900), 0.82)` clamped at 0.62. Both the
+ * exponent and the floor made type proportionally *larger* the smaller the
+ * window got — at 960x540 the floor alone inflated everything by ~10%, which is
+ * exactly the "sizes do not scale consistently" tell. There is no curve and no
+ * lower clamp here on purpose; the outer bounds only exist to keep a 1x1 canvas
+ * or an 8K wall from producing degenerate numbers.
  */
 export function uiScale(w, h) {
-  const s = Math.min(w / REF_W, h / REF_H);
-  return clamp(Math.pow(s, 0.82), 0.62, 2.2);
+  return clamp(Math.min(w, h) / REF_SHORT, 0.2, 4);
+}
+
+/** Safe-area inset in CSS px: 4% of the shorter viewport axis, all four edges. */
+export function safeInset(w, h) {
+  return Math.round(Math.min(w, h) * SAFE_FRACTION);
+}
+
+/**
+ * Stroke width in CSS px for `units` design units.
+ *
+ * Deliberately *not* `Math.max(1, units * s)`: a one-CSS-pixel floor is a
+ * resolution-dependent thickness, and it is what made every hairline in the HUD
+ * read heavy at 960x540 and thin at 1920x1080. The only floor is a sub-pixel
+ * one, low enough that it never engages at any real viewport size, high enough
+ * that a stroke can never collapse to nothing.
+ */
+export function hair(s, units = 1) {
+  const w = units * s;
+  // The only floor is a rasteriser guard: below ~0.75 CSS px a stroke starts
+  // dissolving into its own antialiasing at dpr 1. It engages nowhere in the
+  // supported range (a 1-unit hairline is 0.75 px only below a 675 px short
+  // axis), so it never becomes a size the design depends on.
+  return w < 0.75 ? 0.75 : w;
 }
 
 export function shortestAngle(a) {

@@ -397,7 +397,13 @@ export class PostFX {
     this.viewRT?.dispose();
     this.ldrRT?.dispose();
 
-    this.hdrA = makeRT( w, h, { name: 'hdrA' } );
+    // hdrA receives the world pass, so it needs real depth. Without an
+    // attachment the depth test silently passes for everything and draw order
+    // alone decides occlusion — which lets the sky dome (renderOrder 9000,
+    // depthWrite off, clip z pinned to the far plane) repaint the entire frame
+    // over the town, and lets additive particles draw through walls.
+    // hdrB only ever receives full-screen passes and stays depth-less.
+    this.hdrA = makeRT( w, h, { name: 'hdrA', depthBuffer: true } );
     this.hdrB = makeRT( w, h, { name: 'hdrB' } );
     this.viewRT = makeRT( w, h, { name: 'viewmodel', depthBuffer: true } );
     this.ldrRT = makeRT( ow, oh, {

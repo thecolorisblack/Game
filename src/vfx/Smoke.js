@@ -44,10 +44,10 @@ export class SmokeSystem {
       }
       this.columns.push({
         position: new THREE.Vector3(x, y + 1.5, z),
-        radius: this.rng.range(2.5, 6),
-        rate: this.rng.range(0.55, 0.95),
+        radius: this.rng.range(2.2, 4.5),
+        rate: this.rng.range(0.40, 0.70),
         rise: this.rng.range(2.2, 4.2),
-        life: this.rng.range(16, 26),
+        life: this.rng.range(12, 18),
         tint: this.rng.range(0.75, 1.15),
         accum: this.rng.float() * 2,
       });
@@ -138,9 +138,9 @@ export class SmokeSystem {
       px, c.position.y, pz,
       (Math.random() - 0.5) * 1.4 + 0.6, rise, (Math.random() - 0.5) * 1.4 + 0.3,
       c.life * (0.75 + Math.random() * 0.5),
-      s0, s0 * (4.5 + Math.random() * 3), Math.random() * TAU, (Math.random() - 0.5) * 0.14,
+      s0, s0 * (3.0 + Math.random() * 2), Math.random() * TAU, (Math.random() - 0.5) * 0.14,
       0.16, -0.03, 0,
-      c.tint, c.tint * 0.98, c.tint * 0.95, 0.85,
+      c.tint, c.tint * 0.98, c.tint * 0.95, 0.5,
       P.SMOKE_DARK, 0, 63, 6.0, Math.random(),
     );
   }

@@ -53,6 +53,7 @@ uniform float uRefract;
 uniform float uGlow;
 uniform vec3  uGlowColor;
 uniform float uRimPower;
+uniform vec4  uRange;      // nearStart, nearRange, farStart, farRange
 
 varying vec4 vScreen;
 varying vec3 vNormalView;
@@ -66,6 +67,11 @@ void main() {
   float viewZ = -vViewPos.z;
 
   float mask = pow( clamp( vRim, 0.0, 1.0 ), uRimPower ) * uStrength;
+  // Distance window. Ground shimmer belongs on the far ground, never on the
+  // metre of dirt in front of the player's boots and never out to the horizon;
+  // an unwindowed ground disc is a full-screen additive pass.
+  mask *= clamp( ( viewZ - uRange.x ) / max( 0.001, uRange.y ), 0.0, 1.0 )
+        * clamp( 1.0 - ( viewZ - uRange.z ) / max( 0.001, uRange.w ), 0.0, 1.0 );
   if ( uSoftEnabled > 0.5 ) {
     float d = texture2D( uDepth, uv ).x * 2.0 - 1.0;
     float sceneZ = ( 2.0 * uProj.x * uProj.y ) / ( uProj.y + uProj.x - d * ( uProj.y - uProj.x ) );
@@ -110,6 +116,12 @@ function makeMaterial(noise, opts = {}) {
       uGlow: { value: opts.glow ?? 0.05 },
       uGlowColor: { value: new THREE.Vector3(1, 0.82, 0.6) },
       uRimPower: { value: opts.rimPower ?? 1.0 },
+      uRange: {
+        value: new THREE.Vector4(
+          opts.range?.[0] ?? 0, opts.range?.[1] ?? 0.001,
+          opts.range?.[2] ?? 1e6, opts.range?.[3] ?? 1e6,
+        ),
+      },
       uScrollA: { value: 0 },
       uScrollB: { value: 0 },
       uNoiseScale: { value: new THREE.Vector2(opts.noiseScale ?? 2, opts.noiseScale ?? 2) },
@@ -151,11 +163,16 @@ export class DistortionField {
 
     this.heat = null;
     if (heat) {
-      const geo = new THREE.RingGeometry(2.5, 95, 96, 6);
+      const geo = new THREE.RingGeometry(6, 60, 72, 5);
       geo.rotateX(-Math.PI / 2);
+      geo.computeBoundingSphere();
       const mat = makeMaterial(noiseTexture, {
-        name: 'vfxHeatHaze', refract: 0.020, glow: 0.0, rimPower: 0.25, noiseScale: 22,
-        side: THREE.DoubleSide,
+        // Shimmer is a 12–48 m effect at a grazing angle. `rimPower` used to be
+        // 0.25, which made the mask ~1 over the entire disc — a full-screen
+        // additive refraction of the previous frame, i.e. a ghost of the town
+        // laid over the town.
+        name: 'vfxHeatHaze', refract: 0.011, glow: 0.0, rimPower: 1.6, noiseScale: 22,
+        side: THREE.DoubleSide, range: [12, 14, 34, 26],
       });
       this.materials.push(mat);
       const mesh = new THREE.Mesh(geo, mat);
@@ -195,8 +212,10 @@ export class DistortionField {
 
   setHeat(strength, groundY) {
     if (!this.heat) return;
-    this.heat.strength = saturate(strength);
-    if (groundY !== undefined) this.heat.groundY = groundY;
+    // saturate() passes NaN straight through; a NaN uniform here would put the
+    // whole ground disc into an undefined state.
+    this.heat.strength = (strength - strength === 0) ? saturate(strength) : 0;
+    if (groundY !== undefined && groundY - groundY === 0) this.heat.groundY = groundY;
   }
 
   update(dt, camera, prevTexture, depthTexture, softEnabled) {
@@ -238,16 +257,19 @@ export class DistortionField {
       h.probe -= dt;
       if (h.probe <= 0 && camera) {
         h.probe = 0.75;
-        const hit = this.game?.physics?.raycast?.(camera.position, DOWN, 30);
-        h.groundY = hit ? hit.point.y : camera.position.y - 1.7;
+        let hit = null;
+        try { hit = this.game?.physics?.raycast?.(camera.position, DOWN, 30); } catch (e) { hit = null; }
+        const y = hit ? hit.point.y : camera.position.y - 1.7;
+        if (y - y === 0) h.groundY = y;
       }
-      const on = h.strength > 0.01;
+      const on = h.strength > 0.02;
       h.mesh.visible = on;
       if (on && camera) {
         h.mesh.position.set(camera.position.x, h.groundY + 0.35, camera.position.z);
         h.mesh.updateMatrix();
         h.mesh.updateMatrixWorld(true);
-        h.mat.uniforms.uStrength.value = h.strength;
+        // Hard cap: shimmer is a hint that the air is moving, never a filter.
+        h.mat.uniforms.uStrength.value = Math.min(h.strength, 0.35);
       }
     }
   }

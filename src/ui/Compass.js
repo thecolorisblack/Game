@@ -10,7 +10,7 @@
  * destination-out gradient without punching a hole in the rest of the HUD.
  */
 
-import { clamp, clamp01, damp, rgba, shortestAngle, COLOR, Ease } from './Style.js';
+import { clamp, clamp01, damp, rgba, hair, shortestAngle, COLOR, Ease } from './Style.js';
 import { drawText, measure } from './Type.js';
 import { makeCanvas, ctx2d, diamondPath } from './Draw.js';
 
@@ -77,7 +77,9 @@ export class Compass {
     const w = Math.min(view.w * 0.46, 660 * s);
     const h = 54 * s;
     const x = Math.round((view.w - w) * 0.5);
-    const y = Math.round(view.pad * 0.45);
+    // Top of the safe area, not a fraction of it: the strip used to start at
+    // 45% of the inset and so hung outside the safe rectangle.
+    const y = view.top;
     const dpr = view.dpr;
     const g = this._ensureBuffer(w, h, dpr);
 
@@ -135,13 +137,17 @@ export class Compass {
       path.lineTo(xr, ruleY);
       if (isCardinal) labels.push([CARDINALS.find((c) => c[0] === norm)?.[1] ?? '', px, norm % 90 === 0]);
     }
-    g.strokeStyle = rgba(COLOR.ink, 0.38);
-    g.lineWidth = Math.max(1, 1.1 * s);
+    // Tick weights are design units, so they thin out honestly with the frame.
+    // They are authored a little heavier than the old fixed 1 px so the strip
+    // still carries against a bright skyline at a 540 px short axis.
+    g.strokeStyle = rgba(COLOR.ink, 0.46);
+    g.lineWidth = hair(s, 1.7);
     g.stroke(pMin);
-    g.strokeStyle = rgba(COLOR.ink, 0.62);
+    g.strokeStyle = rgba(COLOR.ink, 0.68);
+    g.lineWidth = hair(s, 1.9);
     g.stroke(pMaj);
-    g.strokeStyle = rgba(COLOR.ink, 0.92);
-    g.lineWidth = Math.max(1.4, 1.8 * s);
+    g.strokeStyle = rgba(COLOR.ink, 0.95);
+    g.lineWidth = hair(s, 2.4);
     g.stroke(pCard);
 
     for (const [label, px, cardinal] of labels) {
@@ -156,8 +162,8 @@ export class Compass {
     }
 
     // baseline rule
-    g.strokeStyle = rgba(COLOR.inkDim, 0.45);
-    g.lineWidth = Math.max(1, 1.1 * s);
+    g.strokeStyle = rgba(COLOR.inkDim, 0.52);
+    g.lineWidth = hair(s, 1.6);
     g.beginPath();
     g.moveTo(0, Math.round(ruleY) + 0.5);
     g.lineTo(w, Math.round(ruleY) + 0.5);
@@ -188,7 +194,7 @@ export class Compass {
         g.fillStyle = rgba(col, 0.22);
         g.fill();
         g.strokeStyle = col;
-        g.lineWidth = Math.max(1, 1.3 * s);
+        g.lineWidth = hair(s, 1.3);
         g.stroke();
         if (m.label) {
           drawText(g, m.label, px, ruleY - 5 * s, {

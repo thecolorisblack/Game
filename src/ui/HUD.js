@@ -20,7 +20,7 @@
  */
 
 import { bus } from '../core/EventBus.js';
-import { clamp, clamp01, damp, rgba, uiScale, COLOR } from './Style.js';
+import { clamp, clamp01, damp, rgba, uiScale, safeInset, COLOR } from './Style.js';
 import { drawText } from './Type.js';
 import { Crosshair } from './Crosshair.js';
 import { Hitmarkers } from './Hitmarker.js';
@@ -53,7 +53,17 @@ export class HUD {
     this.canvas = null;
     this.ctx = null;
     this.dpr = 1;
-    this.view = { w: 1, h: 1, cx: 0.5, cy: 0.5, scale: 1, pad: 26, dpr: 1 };
+    /**
+     * The layout contract every widget draws against.
+     *   scale               one number, linear in the shorter axis (Style.uiScale)
+     *   pad                 safe-area inset, 4% of the shorter axis
+     *   left/top/right/bottom  the safe rectangle — nothing may cross these
+     *   short               min(w, h), for anything sized as a fraction of frame
+     */
+    this.view = {
+      w: 1, h: 1, cx: 0.5, cy: 0.5, scale: 1, pad: 26, dpr: 1,
+      short: 1, left: 26, top: 26, right: 1, bottom: 1,
+    };
 
     this._unsub = [];
     this._compassMarkers = [];
@@ -214,14 +224,22 @@ export class HUD {
     }
     this.dpr = dpr;
 
-    const scale = uiScale(w, h);
-    this.view.w = w;
-    this.view.h = h;
-    this.view.cx = w * 0.5;
-    this.view.cy = h * 0.5;
-    this.view.scale = scale;
-    this.view.pad = Math.round(clamp(28 * scale, 16, 60));
-    this.view.dpr = dpr;
+    // One scale factor, one inset. Every widget derives everything from these,
+    // so the whole HUD is a single uniform magnification of one design.
+    const pad = safeInset(w, h);
+    const v = this.view;
+    v.w = w;
+    v.h = h;
+    v.cx = w * 0.5;
+    v.cy = h * 0.5;
+    v.short = Math.min(w, h);
+    v.scale = uiScale(w, h);
+    v.pad = pad;
+    v.left = pad;
+    v.top = pad;
+    v.right = w - pad;
+    v.bottom = h - pad;
+    v.dpr = dpr;
   }
 
   /* ================================================================== */
@@ -388,10 +406,10 @@ export class HUD {
     const s = view.scale;
     const fps = Math.round(this.game.time?.fps ?? 0);
     const calls = this.game.renderer?.info?.render?.calls ?? 0;
-    const below = (this.minimap.rect?.y ?? view.pad) + (this.minimap.rect?.size ?? 200 * s) + 18 * s;
+    const below = (this.minimap.rect?.y ?? view.top) + (this.minimap.rect?.size ?? 200 * s) + 18 * s;
     ctx.save();
     ctx.globalAlpha = 0.7;
-    drawText(ctx, `${fps} FPS · ${calls} DC`, view.pad, below, {
+    drawText(ctx, `${fps} FPS · ${calls} DC`, view.left, below, {
       size: 9 * s, weight: 0.15, tracking: 0.3,
       color: rgba(fps >= 55 ? COLOR.friendly : fps >= 30 ? COLOR.accent : COLOR.danger, 0.9),
       halo: 1.2,

@@ -1,15 +1,15 @@
 import * as THREE from 'three';
-import { Rng, V, clamp, saturate } from './Util.js';
+import { Rng, clamp, saturate } from './Util.js';
 
 /**
  * Ambient life.
  *
  * Transient effects fire when something happens; this is what is on screen when
- * *nothing* happens, and it is most of the difference between a rendered frame
- * and a photographed one:
+ * *nothing* happens, and it is a large part of the difference between a rendered
+ * frame and a photographed one:
  *
- *   - dust motes in the air, sized in millimetres, glinting hard when you look
- *     toward the sun and vanishing when you look away;
+ *   - dust motes in the air, sized in millimetres, that light up only where a
+ *     shaft catches them and are invisible everywhere else;
  *   - wind-blown sand streaking low across the ground;
  *   - insect swarms hovering over vegetation, repositioned by ground probes so
  *     they never end up inside a wall.
@@ -17,6 +17,17 @@ import { Rng, V, clamp, saturate } from './Util.js';
  * Each field is one draw call and is simulated entirely in the vertex shader on
  * a wrapping torus centred on the camera, so it is infinite and costs nothing
  * to move through.
+ *
+ * Two rules this file exists to enforce, because breaking either turns ambient
+ * particulate into a fog over the whole screen:
+ *
+ *  1. **Occlusion is mandatory.** The HDR colour target has no depth
+ *     attachment, so these sample the g-buffer depth and do a manual depth test
+ *     exactly like `ParticleLayer` does. Without it every mote in the level
+ *     draws through every wall.
+ *  2. **Motes are a shaft effect, not an atmosphere.** Their alpha is gated by
+ *     the forward-scattering term, so they are visible looking into the light
+ *     and gone otherwise. They must never read as haze.
  */
 
 const VERT = /* glsl */`
@@ -42,6 +53,7 @@ varying vec2  vUv;
 varying float vFade;
 varying float vTwinkle;
 varying vec3  vViewPos;
+varying vec4  vScreen;
 
 vec3 swarmCenter( float slot, out float on ) {
   if ( slot < 1.0 ) { on = uSwarmOn.x; return uSwarm0; }
@@ -104,18 +116,24 @@ void main() {
   vTwinkle = 0.55 + 0.45 * sin( uTime * ( 2.0 + aSeed2.z * 7.0 ) + aSeed.w * 40.0 );
 
   gl_Position = projectionMatrix * mv;
+  vScreen = gl_Position;
 }
 `;
 
 const FRAG = /* glsl */`
 precision highp float;
 uniform sampler2D uMap;
+uniform sampler2D uDepth;
+uniform vec2  uProj;      // near, far
+uniform float uSoftEnabled;
 uniform vec4  uTile;      // offsetX, offsetY, scaleX, scaleY
 uniform vec3  uColor;
 uniform vec3  uSunDir;    // view space
 uniform vec3  uSunColor;
 uniform float uOpacity;
 uniform float uGlint;
+uniform float uBase;      // ambient term; 0 means "only visible when backlit"
+uniform float uGate;      // 0..1 how hard alpha is gated by the shaft term
 uniform vec3  uFogColor;
 uniform float uFogDensity;
 
@@ -123,6 +141,7 @@ varying vec2  vUv;
 varying float vFade;
 varying float vTwinkle;
 varying vec3  vViewPos;
+varying vec4  vScreen;
 
 void main() {
   if ( vFade <= 0.002 ) discard;
@@ -130,15 +149,32 @@ void main() {
   float a = tex.a * vFade * uOpacity;
   if ( a <= 0.002 ) discard;
 
+  float viewZ = -vViewPos.z;
+
+  // Manual depth test against the g-buffer. The HDR colour target has no depth
+  // attachment, so without this every mote in the field draws straight through
+  // the level. With no depth texture available the test is skipped rather than
+  // sampling an unrelated sampler.
+  if ( uSoftEnabled > 0.5 ) {
+    vec2 suv = vScreen.xy / max( 1e-5, vScreen.w ) * 0.5 + 0.5;
+    float d = texture2D( uDepth, suv ).x * 2.0 - 1.0;
+    float sceneZ = ( 2.0 * uProj.x * uProj.y ) / ( uProj.y + uProj.x - d * ( uProj.y - uProj.x ) );
+    a *= clamp( ( sceneZ - viewZ ) / 0.25, 0.0, 1.0 );
+    if ( a <= 0.002 ) discard;
+  }
+
   // Forward scattering: a mote is essentially a tiny sphere, so it flares when
   // it sits between the eye and the sun and all but disappears with the sun
-  // behind the camera. This single term is what makes airborne dust read.
+  // behind the camera. This single term is what makes airborne dust read — and
+  // gating alpha on it is what keeps it a shaft effect instead of a haze.
   vec3 vdir = normalize( vViewPos );
   float fwd = clamp( dot( vdir, -uSunDir ) * 0.5 + 0.5, 0.0, 1.0 );
-  float glint = pow( fwd, 6.0 ) * uGlint * vTwinkle;
-  vec3 rgb = uColor * ( 0.35 + glint ) + uSunColor * glint * 0.55;
+  float glint = pow( fwd, 7.0 ) * uGlint * vTwinkle;
+  a *= mix( 1.0, clamp( glint, 0.0, 1.0 ), uGate );
+  if ( a <= 0.002 ) discard;
 
-  float viewZ = -vViewPos.z;
+  vec3 rgb = uColor * ( uBase + glint ) + uSunColor * glint * 0.5;
+
   float fogT = exp( -uFogDensity * uFogDensity * viewZ * viewZ );
 #ifdef ADDITIVE
   rgb *= fogT;
@@ -156,6 +192,7 @@ export class AmbientField {
     this.count = Math.max(0, opts.count | 0);
     this.mode = opts.mode ?? 0;
     this.time = 0;
+    this.enabled = true;
     this._build();
   }
 
@@ -167,6 +204,8 @@ export class AmbientField {
       [-0.5, -0.5, 0, 0.5, -0.5, 0, 0.5, 0.5, 0, -0.5, 0.5, 0], 3));
     geo.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
 
+    // Every instance attribute is fully written here; nothing in this buffer is
+    // ever left at whatever the allocator handed back.
     const rng = new Rng(this.opts.seed ?? 4242);
     const seed = new Float32Array(n * 4);
     const seed2 = new Float32Array(n * 4);
@@ -182,10 +221,16 @@ export class AmbientField {
     }
     geo.setAttribute('aSeed', new THREE.InstancedBufferAttribute(seed, 4));
     geo.setAttribute('aSeed2', new THREE.InstancedBufferAttribute(seed2, 4));
-    geo.instanceCount = n;
-    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+    geo.instanceCount = this.count;
 
     const o = this.opts;
+    // A real, finite bound: the field is a box of known size that follows the
+    // camera, so the sphere is the box's circumradius, re-centred every frame.
+    const box = o.box || new THREE.Vector3(14, 7, 14);
+    this._radius = 0.5 * Math.sqrt(box.x * box.x + box.y * box.y + box.z * box.z)
+      + (o.size?.[0] ?? 0.02) * 4 + 1;
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), this._radius);
+
     const defines = { FIELD_MODE: this.mode };
     if (o.additive !== false) defines.ADDITIVE = '';
 
@@ -208,12 +253,17 @@ export class AmbientField {
         uSwarm3: { value: new THREE.Vector3() },
         uSwarmOn: { value: new THREE.Vector4() },
         uMap: { value: o.map || null },
+        uDepth: { value: null },
+        uProj: { value: new THREE.Vector2(0.05, 2200) },
+        uSoftEnabled: { value: 0 },
         uTile: { value: new THREE.Vector4(o.tile?.[0] ?? 0, o.tile?.[1] ?? 0, o.tile?.[2] ?? 1, o.tile?.[3] ?? 1) },
         uColor: { value: new THREE.Vector3(1, 1, 1) },
         uSunDir: { value: new THREE.Vector3(0, 1, 0) },
         uSunColor: { value: new THREE.Vector3(1, 0.95, 0.86) },
         uOpacity: { value: o.opacity ?? 1 },
         uGlint: { value: o.glint ?? 1 },
+        uBase: { value: o.base ?? 0.35 },
+        uGate: { value: saturate(o.gate ?? 0) },
         uFogColor: { value: new THREE.Vector3(0.5, 0.55, 0.6) },
         uFogDensity: { value: 0 },
       },
@@ -236,12 +286,14 @@ export class AmbientField {
     this.geometry = geo;
     this.material = mat;
     const mesh = new THREE.Mesh(geo, mat);
+    // The field is a box that wraps around the camera, so it is always in view;
+    // culling it is pointless work, but the bound above is real either way.
     mesh.frustumCulled = false;
     mesh.matrixAutoUpdate = false;
     mesh.castShadow = mesh.receiveShadow = false;
     mesh.renderOrder = o.renderOrder ?? 8;
     mesh.userData.postfxIgnore = true;
-    mesh.visible = this.count > 0;
+    mesh.visible = this.enabled !== false && this.count > 0;
     this.mesh = mesh;
   }
 
@@ -258,10 +310,24 @@ export class AmbientField {
   }
 
   update(dt, origin) {
-    this.time += dt;
+    this.time += (dt - dt === 0) ? dt : 0;
     const u = this.material.uniforms;
     u.uTime.value = this.time;
-    if (origin) u.uOrigin.value.copy(origin);
+    if (origin && origin.x - origin.x === 0) {
+      u.uOrigin.value.copy(origin);
+      // Keep the (finite) bound centred on the field so it stays honest.
+      this.geometry.boundingSphere.center.copy(origin);
+      this.geometry.boundingSphere.radius = this._radius;
+    }
+    this.mesh.visible = this.enabled && this.count > 0;
+  }
+
+  /** Depth texture + projection for the manual depth test. */
+  setDepth(depthTexture, camera) {
+    const u = this.material.uniforms;
+    u.uDepth.value = depthTexture || null;
+    u.uSoftEnabled.value = depthTexture ? 1 : 0;
+    if (camera) u.uProj.value.set(camera.near, camera.far);
   }
 
   dispose() {
@@ -272,6 +338,15 @@ export class AmbientField {
 }
 
 /* -------------------------------------------------------------------------- */
+
+/**
+ * Budgets are deliberately small. Ambient particulate is seasoning: the moment
+ * it is legible as a layer over the frame it is wrong, so the counts, sizes and
+ * opacities here are chosen to keep total screen coverage around a percent.
+ */
+const MOTE_COUNT = 150;
+const SAND_COUNT = 190;
+const INSECT_COUNT = 84;
 
 export class AmbientLife {
   constructor(vfx, { sparkAtlas, budget = 900 } = {}) {
@@ -287,20 +362,24 @@ export class AmbientLife {
     const dot = [12 % 4 * 0.25, 1 - (Math.floor(12 / 4) + 1) * 0.25, 0.25, 0.25];
     const softDot = [13 % 4 * 0.25, 1 - (Math.floor(13 / 4) + 1) * 0.25, 0.25, 0.25];
 
-    const scale = clamp(budget / 900, 0.15, 1.6);
+    const scale = clamp(budget / 900, 0.15, 1.3);
 
     this.motes = new AmbientField(this.game, {
       name: 'motes',
-      count: Math.round(340 * scale),
+      count: Math.round(MOTE_COUNT * scale),
       map: sparkAtlas,
       tile: dot,
-      box: new THREE.Vector3(16, 9, 16),
+      box: new THREE.Vector3(15, 8, 15),
       drift: new THREE.Vector3(0.10, 0.035, 0.07),
       wobble: new THREE.Vector3(0.22, 0.30, 0.02),
-      size: [0.0135, 0.75],
+      size: [0.011, 0.75],
       color: { r: 0.55, g: 0.53, b: 0.48 },
-      glint: 3.4,
-      opacity: 0.85,
+      glint: 2.4,
+      // No ambient term and full gating: a mote only exists where the light
+      // catches it. Look away from the sun and the field is simply not there.
+      base: 0.0,
+      gate: 1.0,
+      opacity: 0.42,
       additive: true,
       seed: 991,
       renderOrder: 8,
@@ -308,17 +387,19 @@ export class AmbientLife {
 
     this.sand = new AmbientField(this.game, {
       name: 'sand',
-      count: Math.round(420 * scale),
+      count: Math.round(SAND_COUNT * scale),
       map: sparkAtlas,
       tile: softDot,
-      box: new THREE.Vector3(52, 5.5, 52),
+      box: new THREE.Vector3(46, 4.5, 46),
       drift: new THREE.Vector3(6.5, 0.25, 3.2),
       wobble: new THREE.Vector3(0.55, 0.9, -0.15),
-      size: [0.035, 0.8],
+      size: [0.024, 0.8],
       color: { r: 0.52, g: 0.44, b: 0.31 },
-      glint: 1.5,
-      opacity: 0.30,
-      stretch: 2.4,
+      glint: 1.4,
+      base: 0.05,
+      gate: 0.85,
+      opacity: 0.10,
+      stretch: 2.2,
       additive: true,
       seed: 7717,
       renderOrder: 7,
@@ -327,18 +408,24 @@ export class AmbientLife {
     this.insects = new AmbientField(this.game, {
       name: 'insects',
       mode: 1,
-      count: Math.round(150 * scale),
+      count: Math.round(INSECT_COUNT * scale),
       map: sparkAtlas,
       tile: dot,
       box: new THREE.Vector3(0.55, 0.30, 0.55),
-      size: [0.010, 0.5],
+      size: [0.009, 0.5],
       color: { r: 0.06, g: 0.055, b: 0.05 },
-      glint: 0.35,
-      opacity: 0.9,
+      glint: 0.3,
+      // Insects are dark specks read against the background, not scattering
+      // motes: they keep their body colour and are never gated away.
+      base: 1.0,
+      gate: 0.0,
+      opacity: 0.8,
       additive: false,
       seed: 3131,
       renderOrder: 9,
     });
+    // The swarm field is anchored to probed ground within ~15 m of the camera.
+    this.insects._radius = 18;
 
     this.fields = [this.motes, this.sand, this.insects];
     for (const f of this.fields) this.game.scene?.add(f.mesh);
@@ -354,28 +441,34 @@ export class AmbientLife {
   }
 
   setBudget(budget) {
-    const scale = clamp(budget / 900, 0.15, 1.6);
-    this.motes.setCount(Math.round(340 * scale));
-    this.sand.setCount(Math.round(420 * scale));
-    this.insects.setCount(Math.round(150 * scale));
+    const scale = clamp(budget / 900, 0.15, 1.3);
+    this.motes.setCount(Math.round(MOTE_COUNT * scale));
+    this.sand.setCount(Math.round(SAND_COUNT * scale));
+    this.insects.setCount(Math.round(INSECT_COUNT * scale));
+    this.insects._radius = 18;
     for (const f of this.fields) if (!f.mesh.parent) this.game.scene?.add(f.mesh);
   }
 
   setEnabled(on) {
     this.enabled = !!on;
-    for (const f of this.fields) f.mesh.visible = this.enabled && f.count > 0;
+    for (const f of this.fields) {
+      f.enabled = this.enabled;
+      f.mesh.visible = this.enabled && f.count > 0;
+    }
   }
 
   /**
    * @param {number} dt
    * @param {THREE.Camera} camera
-   * @param {Object} env {sunDirView, sunColor, fogColor, fogDensity, wind, sunElevation}
+   * @param {Object} env {sunDirView, sunColor, fogColor, fogDensity, wind, depth, soft}
    */
   update(dt, camera, env) {
     if (!this.enabled || !camera) return;
-    this.time += dt;
+    const d = (dt - dt === 0) ? clamp(dt, 0, 0.1) : 0;
+    this.time += d;
     this._origin.copy(camera.position);
 
+    const depth = env?.soft ? (env.depth || null) : null;
     for (const f of this.fields) {
       const u = f.material.uniforms;
       if (env) {
@@ -384,6 +477,7 @@ export class AmbientLife {
         u.uFogColor.value.copy(env.fogColor);
         u.uFogDensity.value = env.fogDensity;
       }
+      f.setDepth(depth, camera);
     }
 
     // Wind drives the sand field directly; motes only feel a fraction of it.
@@ -396,20 +490,20 @@ export class AmbientLife {
       );
     }
 
-    this.motes.update(dt, this._origin);
+    this.motes.update(d, this._origin);
 
     // Sand hugs the ground: keep the field centred a metre or so above it.
-    this._probe -= dt;
+    this._probe -= d;
     if (this._probe <= 0) {
       this._probe = 0.5;
       const hit = this._ground(this._origin, 40);
-      if (hit) this.groundY = hit.point.y;
+      if (hit && hit.point.y - hit.point.y === 0) this.groundY = hit.point.y;
     }
-    SAND_ORIGIN.set(this._origin.x, this.groundY + 1.9, this._origin.z);
-    this.sand.update(dt, SAND_ORIGIN);
+    SAND_ORIGIN.set(this._origin.x, this.groundY + 1.6, this._origin.z);
+    this.sand.update(d, SAND_ORIGIN);
 
-    this.insects.update(dt, this._origin);
-    this._updateSwarms(dt, camera);
+    this.insects.update(d, this._origin);
+    this._updateSwarms(d, camera);
   }
 
   _ground(from, dist) {
@@ -456,7 +550,7 @@ export class AmbientLife {
     if (phys?.raycast) {
       try { hit = phys.raycast(PROBE, DOWN, 14); } catch (e) { hit = null; }
     }
-    if (!hit) { s.on = 0; return; }
+    if (!hit || !(hit.point.x - hit.point.x === 0)) { s.on = 0; return; }
     // Insects belong over living ground, not concrete or steel.
     const good = hit.surface === 'foliage' || hit.surface === 'dirt' || hit.surface === 'sand' || hit.surface === 'water';
     s.on = good ? 1 : 0;

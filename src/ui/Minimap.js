@@ -11,7 +11,7 @@
  * they fire un-suppressed, and decay over a few seconds.
  */
 
-import { clamp, clamp01, rgba, COLOR } from './Style.js';
+import { clamp, clamp01, rgba, hair, COLOR } from './Style.js';
 import { drawText } from './Type.js';
 import { makeCanvas, ctx2d, chamferPath, cornerBrackets, diamondPath, glowDot } from './Draw.js';
 
@@ -285,9 +285,14 @@ export class Minimap {
 
   draw(ctx, view) {
     const s = view.scale;
-    const size = Math.round(clamp(196 * s, 130, 300));
-    const x = view.pad;
-    const y = view.pad;
+    // No px clamp: `clamp(196 * s, 130, 300)` bottomed out at 960x540 and made
+    // the plate cover a visibly larger share of the frame there than at 1080p.
+    const size = Math.round(186 * s);
+    // The corner brackets are stroked *on* the plate edge, so half their width
+    // lives outside it. Offset by that half so the ink lands on the safe line.
+    const edge = hair(s, 1.8) * 0.5;
+    const x = view.left + edge;
+    const y = view.top + edge;
     const cx = x + size * 0.5;
     const cy = y + size * 0.5;
     const cham = 12 * s;
@@ -334,7 +339,7 @@ export class Minimap {
     ctx.translate(cx, cy);
     ctx.rotate(yaw);
     ctx.strokeStyle = 'rgba(140,158,170,0.075)';
-    ctx.lineWidth = 1;
+    ctx.lineWidth = hair(s, 1);
     const grid = 10 * ppm;
     const gx = -((px * ppm) % grid);
     const gz = -((pz * ppm) % grid);
@@ -358,7 +363,7 @@ export class Minimap {
       ctx.fillStyle = rgba(COLOR.accent, 0.20);
       ctx.fill();
       ctx.strokeStyle = rgba(COLOR.accent, 0.95);
-      ctx.lineWidth = Math.max(1, 1.4 * s);
+      ctx.lineWidth = hair(s, 1.4);
       ctx.stroke();
       drawText(ctx, o.label, _p[0], _p[1] + 3.4 * s, {
         size: 9 * s, weight: 0.2, tracking: 0, align: 'center',
@@ -385,7 +390,7 @@ export class Minimap {
       if (c.ping > 0.02 && !off) {
         glowDot(ctx, _p[0], _p[1], 16 * s * (1 + (1 - c.ping) * 1.6), COLOR.hostile, c.ping * 0.5);
         ctx.strokeStyle = rgba(COLOR.hostile, c.ping * 0.5);
-        ctx.lineWidth = Math.max(1, 1.2 * s);
+        ctx.lineWidth = hair(s, 1.2);
         ctx.beginPath();
         ctx.arc(_p[0], _p[1], (1 - c.ping) * 22 * s + 4 * s, 0, Math.PI * 2);
         ctx.stroke();
@@ -414,9 +419,9 @@ export class Minimap {
     // --- frame furniture ---------------------------------------------
     chamferPath(ctx, x, y, size, size, cham);
     ctx.strokeStyle = rgba(COLOR.ink, 0.22);
-    ctx.lineWidth = Math.max(1, 1.2 * s);
+    ctx.lineWidth = hair(s, 1.2);
     ctx.stroke();
-    cornerBrackets(ctx, x, y, size, size, 16 * s, Math.max(1.2, 1.8 * s), rgba(COLOR.accent, 0.75));
+    cornerBrackets(ctx, x, y, size, size, 16 * s, hair(s, 1.8), rgba(COLOR.accent, 0.75));
 
     // north pip rides the frame
     const nAng = -yaw - Math.PI / 2;
@@ -472,14 +477,14 @@ export class Minimap {
     ctx.lineTo(-r * 0.74, r * 0.72);
     ctx.closePath();
     ctx.strokeStyle = 'rgba(2,4,6,0.8)';
-    ctx.lineWidth = Math.max(1.1, r * 0.26);
+    ctx.lineWidth = Math.max(0.5, r * 0.26);
     ctx.lineJoin = 'round';
     ctx.stroke();
     ctx.fillStyle = color;
     ctx.fill();
     if (outline) {
       ctx.strokeStyle = 'rgba(255,255,255,0.55)';
-      ctx.lineWidth = Math.max(0.8, r * 0.12);
+      ctx.lineWidth = Math.max(0.4, r * 0.12);
       ctx.stroke();
     }
     ctx.restore();

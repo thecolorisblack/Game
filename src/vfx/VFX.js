@@ -58,6 +58,8 @@ export class VFX {
       fogDensity: 0,
       wind: this.wind,
       sunElevation: 0.6,
+      depth: null,
+      soft: false,
     };
     this._unsubs = [];
     this._muzzleWorld = new THREE.Vector3();
@@ -187,7 +189,10 @@ export class VFX {
     });
 
     this._applyBudget(true);
-    this.smoke.placeColumns(s.preset === 'low' ? 2 : 4);
+    // Distant burning columns are skyline dressing. Two or three of them, kept
+    // inside the level's own footprint, so they never become a grey wash across
+    // the horizon and never stretch the layer's bounds off the map.
+    this.smoke.placeColumns(s.preset === 'low' ? 1 : 2, { minDist: 115, maxDist: 195 });
 
     this._bindEvents();
     return this;
@@ -544,6 +549,10 @@ export class VFX {
     env.fogColor.copy(this.particles._fogColor);
     env.fogDensity = this.particles._fogDensity;
     env.wind = this.wind;
+    // Ambient fields do their own manual depth test against this; without it
+    // they draw straight through the level.
+    env.depth = depth;
+    env.soft = soft;
 
     try { this.decals.update(d, this.time); } catch (e) { this._once('decals', e); }
     try { this.lights.update(d); this.viewLights.update(d); } catch (e) { this._once('lights', e); }
@@ -569,9 +578,12 @@ export class VFX {
 
     // Heat shimmer: strongest with a high sun, and pumped briefly by sustained
     // fire so a firefight visibly disturbs the air.
-    const sunY = g.world?.lighting?.sunDir?.y ?? g.world?.sunDirection?.y ?? 0.6;
+    let sunY = g.world?.lighting?.sunDir?.y ?? g.world?.sunDirection?.y ?? 0.6;
+    if (!(sunY - sunY === 0)) sunY = 0.6;
     this._hazeTarget *= Math.exp(-d * 0.7);
-    this._haze += (saturate(sunY * 1.6 - 0.25) * 0.55 + this._hazeTarget * 0.3 - this._haze)
+    // Deliberately small. Ground shimmer is a detail you notice on a long look
+    // down a street, not a layer over the frame.
+    this._haze += (saturate(sunY * 1.6 - 0.25) * 0.20 + this._hazeTarget * 0.14 - this._haze)
       * (1 - Math.exp(-d * 2.5));
     this.distortion?.setHeat(this._haze);
 

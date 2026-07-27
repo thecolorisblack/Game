@@ -1,17 +1,55 @@
 /**
  * OPERATION BLACKOUT — objective banner, hints, score popups and streaks.
  *
- * The banner announces a new objective full width and then retires to a compact
- * status line under the compass; re-emitting the same objective text with new
- * progress updates the line without replaying the announcement, because the AI
- * system pings progress on every kill.
+ * ## Where this lives on screen, and for how long
+ *
+ * The announcement is a *notification*, not furniture. It occupies a narrow band
+ * in the upper third, directly beneath the compass strip, and it is strictly
+ * transient: wipe in, hold, fade out, gone. It never sits on the reticle, and it
+ * never outstays the moment it is announcing.
+ *
+ * Two rules keep that promise:
+ *
+ *   1. Nothing in the announcement band is anchored to the frame centre. The
+ *      band is `BAND_*` design units below the compass, so it scales and moves
+ *      with the safe area rather than with the middle of the screen.
+ *   2. The envelope only advances while the HUD is actually on screen. The world
+ *      emits `objective` during boot, long before the player is looking at
+ *      anything; without this gate the banner burns its whole lifetime behind a
+ *      menu and either never appears or appears frozen at full opacity for the
+ *      first frames of play. A pending announcement waits, then plays once.
+ *
+ * After the banner retires the objective persists as a compact status line under
+ * the compass. Re-emitting the same text with new progress updates that line
+ * without replaying the announcement, because the AI pings progress on every
+ * kill.
  */
 
-import { clamp01, damp, lerp, rgba, Ease, COLOR } from './Style.js';
-import { drawText, measure } from './Type.js';
+import { clamp01, damp, lerp, rgba, hair, Ease, COLOR } from './Style.js';
+import { drawText, measure, inkBleed } from './Type.js';
 import { envelope, chamferPath } from './Draw.js';
 
 const STREAKS = ['', '', 'DOUBLE KILL', 'TRIPLE KILL', 'MULTI KILL', 'RAMPAGE', 'UNSTOPPABLE'];
+
+/* --- announcement timing (seconds) ---------------------------------- */
+const BANNER_IN = 0.42;
+const BANNER_HOLD = 2.8;
+const BANNER_OUT = 0.75;
+const BANNER_LIFE = BANNER_IN + BANNER_HOLD + BANNER_OUT;
+
+const HINT_IN = 0.30;
+const HINT_OUT = 0.55;
+
+/* --- announcement band, in design units below the compass strip ------ */
+const BAND_LINE = 20;     // compact status line
+const BAND_KICKER = 44;   // 'OBJECTIVE' kicker
+const BAND_TITLE = 64;    // objective title baseline
+const BAND_HINT = 104;    // subtitle / contextual hint
+
+/** Bottom of the compass strip (including its numeric heading), in px. */
+function compassBottom(view) {
+  return view.top + 56 * view.scale;
+}
 
 export class ObjectiveHUD {
   constructor(game) {
@@ -20,12 +58,13 @@ export class ObjectiveHUD {
     this.text = '';
     this.progress = -1;
     this.shownProgress = 0;
-    this.bannerT = 999;
+    this.bannerT = BANNER_LIFE;   // "already retired"
     this.lineFade = 0;
 
     this.hint = '';
-    this.hintT = 999;
+    this.hintT = 0;
     this.hintDur = 0;
+    this.hintLife = 0;
 
     this.popups = [];
     this.score = 0;
@@ -50,11 +89,12 @@ export class ObjectiveHUD {
     if (e?.progress !== undefined && Number.isFinite(e.progress)) this.progress = clamp01(e.progress);
   }
 
-  showHint(text, duration = 4.5) {
+  showHint(text, duration = 4.0) {
     if (!text) return;
     this.hint = String(text).toUpperCase();
     this.hintT = 0;
-    this.hintDur = duration;
+    this.hintDur = Math.max(0.3, duration);
+    this.hintLife = HINT_IN + this.hintDur + HINT_OUT;
   }
 
   addScore(points, label, kind = 'kill') {
@@ -84,11 +124,22 @@ export class ObjectiveHUD {
   /* ------------------------------------------------------------------ */
 
   update(dt) {
-    this.bannerT += dt;
-    this.hintT += dt;
+    // The announcement clock only runs while the player can actually see it.
+    // `objective` is emitted from World.init and again on boot:complete, both of
+    // which land while the title screen is still up.
+    const onScreen = this.game.state === 'playing';
+
+    if (onScreen && this.bannerT < BANNER_LIFE) this.bannerT += dt;
     this.streakT += dt;
 
-    const wantLine = !!this.text && this.bannerT > 2.6;
+    // A hint queued during the announcement waits for it rather than talking
+    // over it — one line in the band at a time.
+    const bannerBusy = this.bannerT < BANNER_LIFE - BANNER_OUT * 0.5;
+    if (onScreen && !bannerBusy && this.hintT < this.hintLife) this.hintT += dt;
+
+    // The status line only appears once the banner is completely gone, so the
+    // band never carries two versions of the same sentence at once.
+    const wantLine = !!this.text && this.bannerT >= BANNER_LIFE;
     this.lineFade = damp(this.lineFade, wantLine ? 1 : 0, 5, dt);
     if (this.progress >= 0) this.shownProgress = damp(this.shownProgress, this.progress, 6, dt);
 
@@ -122,77 +173,89 @@ export class ObjectiveHUD {
     const a = this.lineFade;
     if (a <= 0.02 || !this.text) return;
     const s = view.scale;
-    const cx = view.w * 0.5;
-    const y = view.pad * 0.45 + 76 * s;
+    const cx = view.cx;
+    const y = compassBottom(view) + BAND_LINE * s;
 
     ctx.save();
     ctx.globalAlpha = a;
-    const size = 10 * s;
+    const size = 9 * s;
     const w = measure(this.text, size, 0.42);
     drawText(ctx, this.text, cx, y, {
       size, weight: 0.15, tracking: 0.42, align: 'center',
-      color: rgba(COLOR.ink, 0.82), halo: 1.4,
+      color: rgba(COLOR.ink, 0.78), halo: 1.4,
     });
     if (this.progress >= 0) {
-      const bw = Math.max(w, 120 * s);
+      const bw = Math.max(w, 110 * s);
       const bx = cx - bw * 0.5;
-      const by = y + 8 * s;
+      const by = y + 7 * s;
       ctx.fillStyle = 'rgba(6,10,13,0.6)';
-      ctx.fillRect(bx, by, bw, 2.4 * s);
+      ctx.fillRect(bx, by, bw, 2.2 * s);
       ctx.fillStyle = rgba(COLOR.accent, 0.9);
-      ctx.fillRect(bx, by, bw * this.shownProgress, 2.4 * s);
-      drawText(ctx, `${Math.round(this.shownProgress * 100)}%`, cx + bw * 0.5 + 11 * s, by + 4.5 * s, {
-        size: 8 * s, weight: 0.16, tracking: 0.2, color: rgba(COLOR.accent, 0.8), halo: 1.1,
+      ctx.fillRect(bx, by, bw * this.shownProgress, 2.2 * s);
+      drawText(ctx, `${Math.round(this.shownProgress * 100)}%`, cx + bw * 0.5 + 10 * s, by + 4 * s, {
+        size: 7.5 * s, weight: 0.16, tracking: 0.2, color: rgba(COLOR.accent, 0.8), halo: 1.1,
       });
     }
     ctx.restore();
   }
 
-  /** Full announcement. */
+  /**
+   * The announcement. Compact, upper third, transient.
+   *
+   * Sized so the title is ~15 design units of cap height (a little over half
+   * what it used to be) and auto-condensed if a long objective would otherwise
+   * run wider than 44% of the frame. The whole block lives between the compass
+   * and the top third line — the reticle sits ~28% of the frame below it.
+   */
   _drawBanner(ctx, view) {
-    const a = envelope(this.bannerT, 0.55, 2.6, 0.9);
-    if (a <= 0.02) return;
+    const a = envelope(this.bannerT, BANNER_IN, BANNER_HOLD, BANNER_OUT);
+    if (a <= 0.02 || !this.text) return;
     const s = view.scale;
-    const cx = view.w * 0.5;
-    const y = view.h * 0.30;
-    const inT = clamp01(this.bannerT / 0.55);
-    const slide = (1 - Ease.outQuint(inT)) * 26 * s;
+    const cx = view.cx;
+    const base = compassBottom(view);
+    const yTitle = base + BAND_TITLE * s;
+    const yKicker = base + BAND_KICKER * s;
+
+    const inT = clamp01(this.bannerT / BANNER_IN);
+    const rise = (1 - Ease.outQuint(inT)) * 10 * s;
+
+    // Condense rather than overflow: the announcement is never allowed to run
+    // wider than a comfortable measure, whatever the mission text says.
+    let size = 15 * s;
+    const maxW = view.w * 0.44;
+    const natural = measure(this.text, size, 0.34);
+    if (natural > maxW) size *= maxW / natural;
+    const w = measure(this.text, size, 0.34);
 
     ctx.save();
     ctx.globalAlpha = a;
-    ctx.translate(0, slide);
+    ctx.translate(0, rise);
 
-    const size = 26 * s;
-    const w = measure(this.text, size, 0.36);
-    const ruleW = Math.max(w * 0.62, 130 * s);
-
-    drawText(ctx, 'OBJECTIVE', cx, y - 30 * s, {
-      size: 9.5 * s, weight: 0.17, tracking: 0.85, align: 'center',
-      color: rgba(COLOR.accent, 0.95), halo: 1.4,
+    drawText(ctx, 'OBJECTIVE', cx, yKicker, {
+      size: 7.5 * s, weight: 0.18, tracking: 0.9, align: 'center',
+      color: rgba(COLOR.accent, 0.95), halo: 1.3,
     });
 
-    // rules that wipe outward from behind the title, flanking it
-    const wipe = Ease.outQuint(clamp01(this.bannerT / 0.7));
-    const midY = y - size * 0.34;
-    ctx.strokeStyle = rgba(COLOR.accent, 0.5);
-    ctx.lineWidth = Math.max(1, 1.1 * s);
-    ctx.beginPath();
-    ctx.moveTo(cx - ruleW * 0.5 * wipe - w * 0.5 - 22 * s, midY);
-    ctx.lineTo(cx - w * 0.5 - 18 * s, midY);
-    ctx.moveTo(cx + w * 0.5 + 18 * s, midY);
-    ctx.lineTo(cx + ruleW * 0.5 * wipe + w * 0.5 + 22 * s, midY);
-    ctx.stroke();
-
-    drawText(ctx, this.text, cx, y + 8 * s, {
-      size, weight: 0.115, tracking: 0.36, align: 'center',
-      color: rgba(COLOR.ink, 0.98), halo: 2.0, glow: 0.16, glowColor: COLOR.accent,
+    drawText(ctx, this.text, cx, yTitle, {
+      size, weight: 0.12, tracking: 0.34, align: 'center',
+      color: rgba(COLOR.ink, 0.98), halo: 1.8, glow: 0.14, glowColor: COLOR.accent,
     });
 
-    ctx.strokeStyle = rgba(COLOR.accent, 0.30);
-    ctx.lineWidth = 1;
+    // A single rule that wipes outward from the centre under the title. The old
+    // banner flanked the text with rules as well, which at this size just reads
+    // as noise.
+    const wipe = Ease.outQuint(clamp01(this.bannerT / (BANNER_IN + 0.2)));
+    const ruleW = (w * 0.5 + 14 * s) * wipe;
+    const ruleY = Math.round(yTitle + 9 * s) + 0.5;
+    const grad = ctx.createLinearGradient(cx - ruleW, 0, cx + ruleW, 0);
+    grad.addColorStop(0, rgba(COLOR.accent, 0));
+    grad.addColorStop(0.5, rgba(COLOR.accent, 0.55));
+    grad.addColorStop(1, rgba(COLOR.accent, 0));
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = hair(s, 1.1);
     ctx.beginPath();
-    ctx.moveTo(cx - (w * 0.5 + 24 * s) * wipe, y + 20 * s);
-    ctx.lineTo(cx + (w * 0.5 + 24 * s) * wipe, y + 20 * s);
+    ctx.moveTo(cx - ruleW, ruleY);
+    ctx.lineTo(cx + ruleW, ruleY);
     ctx.stroke();
 
     ctx.restore();
@@ -202,15 +265,16 @@ export class ObjectiveHUD {
     const a = envelope(this.streakT, 0.22, 1.0, 0.7);
     if (a <= 0.02 || !this.streakText) return;
     const s = view.scale;
-    const cx = view.w * 0.5;
-    const y = view.h * 0.40;
+    const cx = view.cx;
+    // Above the reticle, not on it. Loud but short-lived.
+    const y = view.h * 0.33;
     const pop = Ease.outBack(clamp01(this.streakT / 0.22));
     ctx.save();
     ctx.globalAlpha = a;
     ctx.translate(cx, y);
     ctx.scale(lerp(0.86, 1, pop), lerp(0.86, 1, pop));
     drawText(ctx, this.streakText, 0, 0, {
-      size: 19 * s, weight: 0.13, tracking: 0.5, align: 'center',
+      size: 15 * s, weight: 0.13, tracking: 0.5, align: 'center',
       color: rgba(COLOR.accentHot, 1), halo: 1.9, glow: 0.3, glowColor: COLOR.accent,
     });
     ctx.restore();
@@ -249,8 +313,8 @@ export class ObjectiveHUD {
     // running score, parked clear above the ammo block
     if (this.score > 0) {
       const s2 = view.scale;
-      const x = view.w - view.pad;
-      const y = view.h - view.pad - 214 * s2;
+      const x = view.right - inkBleed(14 * s2, 0.13, 1.4);
+      const y = view.bottom - 226 * s2;
       ctx.save();
       ctx.globalAlpha = 0.55 + this.scoreFlash * 0.45;
       drawText(ctx, 'SCORE', x - 52 * s2, y, {
@@ -265,26 +329,38 @@ export class ObjectiveHUD {
     }
   }
 
+  /**
+   * Contextual subtitle. Same band as the banner, one step lower, same
+   * transient contract — it used to be parked at 72% of the frame height, i.e.
+   * straight through the lower half of the aim line.
+   */
   _drawHint(ctx, view) {
-    const a = envelope(this.hintT, 0.35, Math.max(0.3, this.hintDur), 0.6);
+    const a = envelope(this.hintT, HINT_IN, this.hintDur, HINT_OUT);
     if (a <= 0.02 || !this.hint) return;
     const s = view.scale;
-    const cx = view.w * 0.5;
-    const y = view.h * 0.72;
-    const size = 11 * s;
+    const cx = view.cx;
+    const y = compassBottom(view) + BAND_HINT * s;
+
+    let size = 8.5 * s;
+    const maxW = view.w * 0.40;
+    const natural = measure(this.hint, size, 0.44);
+    if (natural > maxW) size *= maxW / natural;
     const w = measure(this.hint, size, 0.44);
+
+    const padX = 10 * s;
+    const boxH = 17 * s;
 
     ctx.save();
     ctx.globalAlpha = a;
-    chamferPath(ctx, cx - w * 0.5 - 14 * s, y - 15 * s, w + 28 * s, 24 * s, 6 * s);
-    ctx.fillStyle = 'rgba(5,8,11,0.55)';
+    chamferPath(ctx, cx - w * 0.5 - padX, y - boxH * 0.72, w + padX * 2, boxH, 4.5 * s);
+    ctx.fillStyle = 'rgba(5,8,11,0.5)';
     ctx.fill();
-    ctx.strokeStyle = rgba(COLOR.accent, 0.22);
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = rgba(COLOR.accent, 0.20);
+    ctx.lineWidth = hair(s, 1);
     ctx.stroke();
-    drawText(ctx, this.hint, cx, y + 2.5 * s, {
-      size, weight: 0.145, tracking: 0.44, align: 'center',
-      color: rgba(COLOR.ink, 0.92), halo: 1.4,
+    drawText(ctx, this.hint, cx, y, {
+      size, weight: 0.15, tracking: 0.44, align: 'center',
+      color: rgba(COLOR.ink, 0.90), halo: 1.3,
     });
     ctx.restore();
   }

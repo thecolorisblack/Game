@@ -45,6 +45,8 @@ export class DecalSystem {
     this._collectCb = null;
     this._time = 0;
     this._writeVerts = 0;
+    this._boundsDirty = true;
+    this._maxUsed = -1;
 
     this._buildMaterial();
     this.setCapacity(game?.settings?.decalBudget ?? 128);
@@ -92,7 +94,11 @@ export class DecalSystem {
     geo.setAttribute('normal', new THREE.BufferAttribute(this.normal, 3).setUsage(THREE.DynamicDrawUsage));
     geo.setAttribute('uv', new THREE.BufferAttribute(this.uv, 2).setUsage(THREE.DynamicDrawUsage));
     geo.setAttribute('color', new THREE.BufferAttribute(this.color, 4).setUsage(THREE.DynamicDrawUsage));
-    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 1e6);
+    // Unwritten slots are three coincident vertices at the origin — zero area,
+    // alpha zero — and the draw range below stops before them anyway. The bound
+    // is a real one, recomputed from the live slots in `update`.
+    geo.boundingSphere = new THREE.Sphere(new THREE.Vector3(), 0);
+    geo.setDrawRange(0, 0);
 
     const old = this.mesh;
     const parent = old?.parent;
@@ -100,7 +106,8 @@ export class DecalSystem {
     this.geometry = geo;
 
     const mesh = new THREE.Mesh(geo, this.material);
-    mesh.frustumCulled = false;
+    // Real bounds, so this culls like anything else.
+    mesh.frustumCulled = true;
     mesh.matrixAutoUpdate = false;
     mesh.castShadow = false;
     mesh.receiveShadow = true;
@@ -115,12 +122,14 @@ export class DecalSystem {
         index: i, used: false, birth: 0, life: 30, fadeIn: 0.1, fadeOut: 2.5,
         alpha: 0, target: 1, verts: 0, permanent: false,
         pos: new THREE.Vector3(), r: 0.2, g: 0, b: 0, tint: new THREE.Color(1, 1, 1),
-        grow: 0, growRate: 0, base: null,
+        grow: 0, growRate: 0, base: null, radius: 0,
       };
     }
     this._growing.length = 0;
     this._dirtyMin = Infinity;
     this._dirtyMax = -Infinity;
+    this._maxUsed = -1;
+    this._boundsDirty = true;
   }
 
   /* --------------------------------------------------------------- spawn */
@@ -145,6 +154,10 @@ export class DecalSystem {
    */
   spawn(o) {
     if (!this.capacity || !o?.point || !o?.normal) return null;
+    // A decal projected around a NaN point poisons the shared buffer and the
+    // bounding sphere with it, so the point is checked before anything else.
+    const pt = o.point;
+    if (!(pt.x - pt.x === 0 && pt.y - pt.y === 0 && pt.z - pt.z === 0)) return null;
     const slot = this._acquire(o.point);
     if (!slot) return null;
 
@@ -180,6 +193,9 @@ export class DecalSystem {
     slot.tint.set(o.color ? o.color.r : 1, o.color ? o.color.g : 1, o.color ? o.color.b : 1);
     slot.grow = o.grow ? 0 : 1;
     slot.growRate = o.grow ? 1 / Math.max(0.05, o.grow) : 0;
+    slot.radius = Math.sqrt(size * size * 0.5 + depth * depth * 0.25);
+    if (slot.index > this._maxUsed) this._maxUsed = slot.index;
+    this._boundsDirty = true;
 
     const tile = (o.tile ?? 0) % (this.tiles * this.tiles);
     const built = this._project(slot, o.point, t, b, n, size, depth, tile, o.flipU === true);
@@ -392,7 +408,7 @@ export class DecalSystem {
       if (age < s.fadeIn) a = age / Math.max(1e-4, s.fadeIn);
       else if (!s.permanent && age > s.life - s.fadeOut) {
         a = saturate((s.life - age) / Math.max(1e-4, s.fadeOut));
-        if (a <= 0.001) { s.used = false; a = 0; }
+        if (a <= 0.001) { s.used = false; a = 0; this._boundsDirty = true; }
       } else a = 1;
       if (Math.abs(a - s.alpha) > 0.003 || (a === 0 && s.alpha !== 0)) {
         s.alpha = a;
@@ -439,6 +455,45 @@ export class DecalSystem {
       this._dirtyMin = Infinity;
       this._dirtyMax = -Infinity;
     }
+
+    if (this._boundsDirty) this._refreshBounds();
+  }
+
+  /**
+   * A real bounding sphere over the live decals, plus a draw range that stops
+   * at the last used slot so retired ones are not submitted at all.
+   */
+  _refreshBounds() {
+    this._boundsDirty = false;
+    const slots = this.slots;
+    let minX = Infinity, minY = Infinity, minZ = Infinity;
+    let maxX = -Infinity, maxY = -Infinity, maxZ = -Infinity;
+    let last = -1;
+    for (let i = 0; i < slots.length; i++) {
+      const s = slots[i];
+      if (!s.used) continue;
+      last = i;
+      const r = s.radius || 0.3;
+      if (s.pos.x - r < minX) minX = s.pos.x - r;
+      if (s.pos.y - r < minY) minY = s.pos.y - r;
+      if (s.pos.z - r < minZ) minZ = s.pos.z - r;
+      if (s.pos.x + r > maxX) maxX = s.pos.x + r;
+      if (s.pos.y + r > maxY) maxY = s.pos.y + r;
+      if (s.pos.z + r > maxZ) maxZ = s.pos.z + r;
+    }
+    this._maxUsed = last;
+    const sphere = this.geometry.boundingSphere;
+    if (last < 0) {
+      sphere.center.set(0, 0, 0);
+      sphere.radius = 0;
+      this.geometry.setDrawRange(0, 0);
+      return;
+    }
+    const cx = (minX + maxX) * 0.5, cy = (minY + maxY) * 0.5, cz = (minZ + maxZ) * 0.5;
+    const dx = maxX - cx, dy = maxY - cy, dz = maxZ - cz;
+    sphere.center.set(cx, cy, cz);
+    sphere.radius = Math.sqrt(dx * dx + dy * dy + dz * dz);
+    this.geometry.setDrawRange(0, (last + 1) * VERTS_PER_SLOT);
   }
 
   clear() {
@@ -446,6 +501,11 @@ export class DecalSystem {
     this.color.fill(0);
     this.position.fill(0);
     this._growing.length = 0;
+    this._maxUsed = -1;
+    this._boundsDirty = false;
+    this.geometry.setDrawRange(0, 0);
+    this.geometry.boundingSphere.center.set(0, 0, 0);
+    this.geometry.boundingSphere.radius = 0;
     for (const key of ['position', 'color']) {
       const a = this.geometry.attributes[key];
       if (typeof a.clearUpdateRanges === 'function') a.clearUpdateRanges();

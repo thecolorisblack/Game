@@ -10,8 +10,8 @@
  * events, with `game.weapons.weapon` used only for names and fire mode.
  */
 
-import { clamp, clamp01, damp, rgba, Ease, Spring, COLOR } from './Style.js';
-import { drawText, measure } from './Type.js';
+import { clamp, clamp01, damp, rgba, hair, Ease, Spring, COLOR } from './Style.js';
+import { drawText, measure, inkBleed } from './Type.js';
 import { chamferPath } from './Draw.js';
 import { drawWeaponIcon, iconIdFor } from './WeaponIcons.js';
 
@@ -108,8 +108,10 @@ export class AmmoPanel {
     const w = this.game.weapons;
     const weapon = w?.weapon;
     const s = view.scale;
-    const right = view.w - view.pad;
-    const bottom = view.h - view.pad;
+    // The reserve numerals are the widest-stroked thing hugging the right edge;
+    // everything in the block shares their anchor so the whole column lines up.
+    const right = view.right - inkBleed(19 * s, 0.13, 1.4);
+    const bottom = view.bottom;
 
     const slide = clamp01(this.slide.value);
     const dx = (1 - Ease.outCubic(slide)) * 120 * s;
@@ -173,7 +175,7 @@ export class AmmoPanel {
     const stripW = Math.min(right - groupLeft, 200 * s);
     const stripX = right - stripW;
     const segCount = clamp(magSize, 1, 42);
-    const gapSeg = Math.max(1, 1.4 * s);
+    const gapSeg = hair(s, 1.4);
     const segW = (stripW - gapSeg * (segCount - 1)) / segCount;
     const perSeg = magSize / segCount;
     for (let i = 0; i < segCount; i++) {
@@ -220,7 +222,7 @@ export class AmmoPanel {
       ctx.fillStyle = rgba(COLOR.danger, 0.16);
       ctx.fill();
       ctx.strokeStyle = rgba(COLOR.danger, 0.85);
-      ctx.lineWidth = Math.max(1, 1.1 * s);
+      ctx.lineWidth = hair(s, 1.1);
       ctx.stroke();
       drawText(ctx, 'R', x0 + chipW * 0.5, py - 3.6 * s, {
         size: 9 * s, weight: 0.18, tracking: 0, align: 'center', color: COLOR.danger, halo: false,
@@ -253,7 +255,7 @@ export class AmmoPanel {
       ctx.fillStyle = rgba(COLOR.accent, 0.10 + flash * 0.30);
       ctx.fill();
       ctx.strokeStyle = rgba(COLOR.accent, 0.42 + flash * 0.5);
-      ctx.lineWidth = Math.max(1, 1.1 * s);
+      ctx.lineWidth = hair(s, 1.1);
       ctx.stroke();
       drawText(ctx, mode, right - chipW * 0.5, chipY + chipH * 0.5 + 3.4 * s, {
         size: 9.5 * s, weight: 0.155, tracking: 0.44, align: 'center',
@@ -275,7 +277,7 @@ export class AmmoPanel {
     ruleGrad.addColorStop(0, rgba(COLOR.accent, 0));
     ruleGrad.addColorStop(1, rgba(COLOR.accent, 0.55));
     ctx.fillStyle = ruleGrad;
-    ctx.fillRect(right - ruleW, nameY + 7 * s, ruleW, 1);
+    ctx.fillRect(right - ruleW, nameY + 7 * s, ruleW, hair(s, 1));
     ctx.globalAlpha = alpha;
 
     /* --- silhouette --------------------------------------------------- */
